@@ -1,0 +1,10 @@
+﻿{
+    "database":  10,
+    "type":  "native",
+    "native":  {
+                   "query":  "SELECT DISTINCT\n    \"bnpl_ledger\".\"partner_name\" AS \"PARTNER_NAME\",\n    \"bnpl_ledger\".\"customer_name\" AS \"CUSTOMER_NAME\",\n    \"bnpl_ledger\".\"invoice_number\" AS \"INVOICE_NUMBER\",\n    \"bnpl_ledger\".\"invoice_external_number\" AS \"INVOICE_EXTERNAL_NUMBER\",\n    \"bnpl_ledger\".\"transaction_timestamp\" AS \"TRANSACTION_TIMESTAMP\",\n    \"bnpl_ledger\".\"transaction_status\" AS \"TRANSACTION_STATUS\",\n    \"bnpl_ledger\".\"bnpl_ledger_id\" AS \"PAYMENT_ID\",\n    \"bnpl_ledger\".\"payment_trigger\" AS \"PAYMENT_TRIGGER\",\n    \"bnpl_ledger\".\"payment_amount\" AS \"PAYMENT_AMOUNT\",\n    \"bnpl_ledger\".\"payment_net_amount\" AS \"PAYMENT_NET_AMOUNT\",\n    \"bnpl_ledger\".\"partner_id\" AS \"PARTNER_ID\",\n    \"bnpl_ledger\".\"customer_id\" AS \"CUSTOMER_ID\",\n    \"Svb Return Codes\".\"return_code_created_at\" AS \"Svb Return Codes__return_code_created_at\",\n    \"Svb Return Codes\".\"return_code\" AS \"Svb Return Codes__return_code\",\n    \"Svb Return Codes\".\"transaction_failure_reason\" AS \"Svb Return Codes__transaction_failure_reason\"\nFROM gold.bnpl_ledger AS \"bnpl_ledger\"\nLEFT JOIN default.alt_svb_svb_responses AS \"Svb Return Codes\" ON \"bnpl_ledger\".\"bnpl_ledger_id\" = \"Svb Return Codes\".\"id\"\nWHERE (\"bnpl_ledger\".\"transaction_status\" = \u0027chargeback\u0027) AND (\"bnpl_ledger\".\"payment_method\" = \u0027ach\u0027)\nORDER BY \"Svb Return Codes\".\"return_code_created_at\" DESC\nLIMIT 1048575",
+                   "template-tags":  {
+
+                                     }
+               }
+}

@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+ui/node_modules/
+
+# Build outputs
+dist/
+ui/dist/
+.next/
+out/
+
+# Environment variables
+.env
+.env.local
+.env.production.local
+.env.development.local
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Runtime data
+*.pid
+*.seed
+*.pid.lock
+
+# Migration data
+card_id_mapping.json
+table_mapping_workflow.json
+field_mapping_workflow.json
+migration_report.json
+waiting_area.json
+preview-response.json
+test-preview.js
+
+# Vercel
+.vercel
