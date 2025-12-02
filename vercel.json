@@ -5,7 +5,7 @@
             "src": "ui/package.json",
             "use": "@vercel/static-build",
             "config": {
-                "distDir": "ui/dist"
+                "distDir": "dist"
             }
         }
     ],
@@ -16,7 +16,8 @@
         },
         {
             "src": "/(.*)",
-            "dest": "/ui/$1"
+            "dest": "/ui/dist/$1"
         }
-    ]
+    ],
+    "outputDirectory": "ui/dist"
 }
