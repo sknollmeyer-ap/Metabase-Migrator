@@ -18,6 +18,10 @@ export class MetabaseClient {
         });
     }
 
+    getBaseUrl(): string {
+        return config.metabaseBaseUrl;
+    }
+
     async validateConnection(): Promise<boolean> {
         try {
             await this.client.get('/api/user/current');

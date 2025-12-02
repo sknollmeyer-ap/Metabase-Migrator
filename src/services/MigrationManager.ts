@@ -83,13 +83,26 @@ export class MigrationManager {
 
         // 4. Check if this card is already migrated
         if (this.cardIdMapping.has(cardId) && !force) {
-            console.log(`Card ${cardId} already migrated to ${this.cardIdMapping.get(cardId)}`);
+            const newCardId = this.cardIdMapping.get(cardId)!;
+            console.log(`Card ${cardId} already migrated to ${newCardId}`);
+
+            // Fetch the migrated card to show its query
+            let migratedQuery = null;
+            try {
+                const migratedCard = await this.client.getCard(newCardId);
+                migratedQuery = migratedCard.dataset_query;
+            } catch (err) {
+                console.warn(`Could not fetch migrated card ${newCardId}:`, err);
+            }
+
             return {
                 oldId: cardId,
-                newId: this.cardIdMapping.get(cardId),
+                newId: newCardId,
                 status: 'already_migrated',
                 cardName: card.name,
                 originalQuery: card.dataset_query,
+                migratedQuery: migratedQuery,
+                cardUrl: `${this.client.getBaseUrl()}/question/${newCardId}`,
                 dependencies: dependencyResults
             };
         }
