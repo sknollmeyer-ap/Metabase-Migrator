@@ -198,5 +198,16 @@ app.put('/api/table-mappings/:oldId', async (req, res) => {
     }
 });
 
-// Export for Vercel
-export default app;
+// Export for Vercel serverless
+export default async (req: VercelRequest, res: VercelResponse) => {
+    // Use the Express app as a request handler
+    return new Promise((resolve, reject) => {
+        app(req as any, res as any, (err: any) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(undefined);
+            }
+        });
+    });
+};
