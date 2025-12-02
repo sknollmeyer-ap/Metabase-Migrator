@@ -1,25 +1,13 @@
 {
-    "version": 2,
-    "builds": [
+    "buildCommand": "cd ui && npm install && npm run build",
+    "outputDirectory": "ui/dist",
+    "devCommand": "cd ui && npm run dev",
+    "installCommand": "npm install && cd ui && npm install",
+    "framework": null,
+    "rewrites": [
         {
-            "src": "ui/package.json",
-            "use": "@vercel/static-build",
-            "config": {
-                "distDir": "dist"
-            }
-        }
-    ],
-    "routes": [
-        {
-            "src": "/api/(.*)",
-            "dest": "/api/index.js"
-        },
-        {
-            "handle": "filesystem"
-        },
-        {
-            "src": "/(.*)",
-            "dest": "/ui/dist/index.html"
+            "source": "/api/:path*",
+            "destination": "/api/index.js"
         }
     ]
 }
