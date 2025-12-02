@@ -1,14 +1,19 @@
 import { MetadataMapper } from './MetadataMapper';
 import { config } from '../config';
+import { UnmatchedTable, UnmatchedField } from '../types';
 
 export interface MigrationResult {
     query: any;
     warnings: string[];
+    unmatchedTables: UnmatchedTable[];
+    unmatchedFields: UnmatchedField[];
 }
 
 export class MbqlMigrator {
     private mapper: MetadataMapper;
     private warnings: string[] = [];
+    private unmatchedTables: UnmatchedTable[] = [];
+    private unmatchedFields: UnmatchedField[] = [];
     private cardIdMap: Map<number, number>;
 
     constructor(mapper: MetadataMapper, cardIdMap: Map<number, number> = new Map()) {
@@ -21,8 +26,11 @@ export class MbqlMigrator {
     }
 
     migrateQuery(query: any): MigrationResult {
-        this.warnings = []; // Reset warnings
-        if (!query) return { query, warnings: [] };
+        this.warnings = [];
+        this.unmatchedTables = [];
+        this.unmatchedFields = [];
+
+        if (!query) return { query, warnings: [], unmatchedTables: [], unmatchedFields: [] };
 
         // Deep copy to avoid mutating original
         const newQuery = JSON.parse(JSON.stringify(query));
@@ -36,7 +44,12 @@ export class MbqlMigrator {
             newQuery.query = this.migrateInnerQuery(newQuery.query);
         }
 
-        return { query: newQuery, warnings: this.warnings };
+        return {
+            query: newQuery,
+            warnings: this.warnings,
+            unmatchedTables: this.unmatchedTables,
+            unmatchedFields: this.unmatchedFields
+        };
     }
 
     private migrateInnerQuery(innerQuery: any): any {
@@ -53,6 +66,20 @@ export class MbqlMigrator {
                     const msg = `Warning: Could not map table ID ${oldId}`;
                     console.warn(msg);
                     this.warnings.push(msg);
+
+                    // Add to unmatched tables if not already present
+                    if (!this.unmatchedTables.find(t => t.sourceTableId === oldId)) {
+                        const knownMissing = this.mapper.missingTables.find(t => t.sourceTableId === oldId);
+                        if (knownMissing) {
+                            this.unmatchedTables.push(knownMissing);
+                        } else {
+                            this.unmatchedTables.push({
+                                sourceTableId: oldId,
+                                sourceTableName: `Table ${oldId}`,
+                                schema: 'public'
+                            });
+                        }
+                    }
                 }
             } else if (typeof oldId === 'string' && oldId.startsWith('card__')) {
                 // Handle nested card references
@@ -105,6 +132,15 @@ export class MbqlMigrator {
                     const msg = `Warning: Could not map ${label} (id ${fieldId})`;
                     console.warn(msg);
                     this.warnings.push(msg);
+
+                    if (!this.unmatchedFields.find(f => f.sourceFieldId === fieldId)) {
+                        this.unmatchedFields.push({
+                            sourceFieldId: fieldId,
+                            sourceFieldName: info?.name || `Field ${fieldId}`,
+                            sourceTableName: info?.table || 'Unknown Table',
+                            sourceTableId: 0
+                        });
+                    }
                 }
             }
             // Handle options if present (e.g. source-field for joins)
@@ -122,6 +158,15 @@ export class MbqlMigrator {
                             const msg = `Warning: Could not map source-field ${label} (id ${sourceFieldId})`;
                             console.warn(msg);
                             this.warnings.push(msg);
+
+                            if (!this.unmatchedFields.find(f => f.sourceFieldId === sourceFieldId)) {
+                                this.unmatchedFields.push({
+                                    sourceFieldId: sourceFieldId,
+                                    sourceFieldName: info?.name || `Field ${sourceFieldId}`,
+                                    sourceTableName: info?.table || 'Unknown Table',
+                                    sourceTableId: 0
+                                });
+                            }
                         }
                     }
                 }

@@ -80,6 +80,103 @@ app.get('/api/cards', async (req, res) => {
     }
 });
 
+// GET /api/metadata/tables
+app.get('/api/metadata/tables', async (req, res) => {
+    try {
+        const dbId = parseInt(req.query.databaseId as string, 10);
+        if (isNaN(dbId)) {
+            return res.status(400).json({ error: 'databaseId is required' });
+        }
+
+        const mgr = await ensureInitialized();
+        const client = mgr.getClient();
+        const metadata = await client.getDatabaseMetadata(dbId);
+
+        const tables = (metadata.tables || []).map((t: any) => ({
+            id: t.id,
+            name: t.name,
+            schema: t.schema,
+            display_name: t.display_name
+        }));
+
+        res.json(tables);
+    } catch (error: any) {
+        console.error('Metadata tables error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/metadata/fields
+app.get('/api/metadata/fields', async (req, res) => {
+    try {
+        const dbId = parseInt(req.query.databaseId as string, 10);
+        const tableId = parseInt(req.query.tableId as string, 10);
+
+        if (isNaN(dbId) || isNaN(tableId)) {
+            return res.status(400).json({ error: 'databaseId and tableId are required' });
+        }
+
+        const mgr = await ensureInitialized();
+        const client = mgr.getClient();
+
+        const metadata = await client.getDatabaseMetadata(dbId);
+        const table = metadata.tables?.find((t: any) => t.id === tableId);
+
+        if (!table) {
+            return res.status(404).json({ error: 'Table not found' });
+        }
+
+        const fields = (table.fields || []).map((f: any) => ({
+            id: f.id,
+            name: f.name,
+            display_name: f.display_name,
+            base_type: f.base_type,
+            table_id: tableId
+        }));
+
+        res.json(fields);
+    } catch (error: any) {
+        console.error('Metadata fields error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/mappings/table
+app.post('/api/mappings/table', async (req, res) => {
+    try {
+        const { sourceTableId, targetTableId } = req.body;
+        if (typeof sourceTableId !== 'number' || typeof targetTableId !== 'number') {
+            return res.status(400).json({ error: 'sourceTableId and targetTableId are required numbers' });
+        }
+
+        const mgr = await ensureInitialized();
+        await mgr.getMapper().setTableMapping(sourceTableId, targetTableId);
+
+        res.json({ status: 'ok', sourceTableId, targetTableId });
+    } catch (error: any) {
+        console.error('Table mapping error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/mappings/field
+app.post('/api/mappings/field', async (req, res) => {
+    try {
+        const { sourceFieldId, targetFieldId } = req.body;
+        if (typeof sourceFieldId !== 'number' || typeof targetFieldId !== 'number') {
+            return res.status(400).json({ error: 'sourceFieldId and targetFieldId are required numbers' });
+        }
+
+        const mgr = await ensureInitialized();
+        await mgr.setFieldOverride(sourceFieldId, targetFieldId);
+
+        res.json({ status: 'ok', sourceFieldId, targetFieldId });
+    } catch (error: any) {
+        console.error('Field mapping error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // POST /api/preview/:cardId
 app.post('/api/preview/:cardId', async (req, res) => {
     try {
@@ -104,7 +201,12 @@ app.post('/api/preview/:cardId', async (req, res) => {
             errors: result.errors || [],
             status: result.status,
             newId: result.newId,
-            cardUrl: result.cardUrl
+            cardUrl: result.cardUrl,
+            errorCode: result.errorCode,
+            message: result.message,
+            details: result.details,
+            unmatchedTables: result.unmatchedTables || [],
+            unmatchedFields: result.unmatchedFields || []
         };
 
         console.log('Sending preview response:', JSON.stringify(preview, null, 2));
@@ -121,80 +223,6 @@ app.post('/api/preview/:cardId', async (req, res) => {
             warnings: [],
             errors: [error.message]
         });
-    }
-});
-
-// POST /api/migrate/:id
-app.post('/api/migrate/:id', async (req, res) => {
-    try {
-        const mgr = await ensureInitialized();
-        const cardId = parseInt(req.params.id, 10);
-        const dryRun = req.body.dryRun !== false;
-        const collectionId = req.body.collection_id || null;
-        const force = req.body.force === true;
-
-        console.log(`\n========================================`);
-        console.log(`Migration request for card ${cardId} (dry-run: ${dryRun}, force: ${force})`);
-        if (collectionId) console.log(`Target collection: ${collectionId}`);
-        console.log(`========================================`);
-
-        const result = await mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force);
-
-        res.json(result);
-    } catch (error: any) {
-        console.error('Migration error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// GET /api/table-mappings
-app.get('/api/table-mappings', async (req, res) => {
-    try {
-        const rawMappings = await storage.getTableMappings();
-        const mappings = rawMappings.map((m: any) => ({
-            ...m,
-            confirmed: m.confirmed === true,
-            ignored: m.ignored === true
-        }));
-
-        const confirmed = req.query.confirmed;
-        const ignored = req.query.ignored;
-
-        let filtered = mappings;
-        if (confirmed === 'true') {
-            filtered = filtered.filter((m: any) => m.confirmed === true);
-        } else if (confirmed === 'false') {
-            filtered = filtered.filter((m: any) => m.confirmed !== true);
-        }
-
-        if (ignored === 'true') {
-            filtered = filtered.filter((m: any) => m.ignored === true);
-        } else if (ignored === 'false') {
-            filtered = filtered.filter((m: any) => m.ignored !== true);
-        }
-
-        res.json(filtered);
-    } catch (error: any) {
-        console.error('Table mappings endpoint error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// PUT /api/table-mappings/:oldId
-app.put('/api/table-mappings/:oldId', async (req, res) => {
-    try {
-        const oldId = parseInt(req.params.oldId, 10);
-        const { confirmed, final_new_table_id, ignored } = req.body;
-
-        const updated = await storage.updateTableMapping(oldId, {
-            confirmed,
-            final_new_table_id,
-            ignored: ignored === true
-        });
-
-        res.json(updated);
-    } catch (error: any) {
-        res.status(500).json({ error: error.message });
     }
 });
 

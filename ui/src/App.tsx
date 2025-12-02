@@ -1,17 +1,7 @@
 import { useState, useEffect } from 'react'
 import './App.css'
-
-interface CardPreview {
-  cardId: number;
-  cardName: string;
-  original: any;
-  migrated: any;
-  warnings: string[];
-  errors: string[];
-  status?: string;
-  newId?: number;
-  cardUrl?: string;
-}
+import { UnmatchedMapping } from './components/UnmatchedMapping';
+import type { MigrationResponse } from './types';
 
 interface CardSummary {
   id: number;
@@ -29,30 +19,21 @@ interface MigratedCard {
 
 function App() {
   const [cards, setCards] = useState<CardSummary[]>([]);
-  const [currentCardIndex, setCurrentCardIndex] = useState(0);
-  const [preview, setPreview] = useState<CardPreview | null>(null);
+  const [currentCardIndex, setCurrentCardIndex] = useState<number | null>(null);
+  const [preview, setPreview] = useState<MigrationResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [migratedCards, setMigratedCards] = useState<MigratedCard[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const defaultDbId = 6;
+  const targetDbId = 10;
 
   // Load cards and migrated cards on mount
   useEffect(() => {
     fetchCards();
     loadMigratedCards();
   }, []);
-
-  // Auto-select first unmigrated card
-  useEffect(() => {
-    if (cards.length > 0 && migratedCards.length > 0) {
-      const firstUnmigrated = cards.findIndex(c => !isCardMigrated(c.id));
-      if (firstUnmigrated !== -1) {
-        setCurrentCardIndex(firstUnmigrated);
-      }
-    }
-  }, [cards, migratedCards]);
 
   const loadMigratedCards = () => {
     const stored = localStorage.getItem('migratedCards');
@@ -90,7 +71,7 @@ function App() {
     return migratedCards.some(m => m.oldId === cardId);
   };
 
-  const currentCard = cards[currentCardIndex];
+  const currentCard = currentCardIndex !== null ? cards[currentCardIndex] : null;
   const isMigrated = currentCard ? isCardMigrated(currentCard.id) : false;
 
   const previewCard = async () => {
@@ -110,22 +91,18 @@ function App() {
         throw new Error(`API returned ${res.status}: ${errorText}`);
       }
 
-      const data = await res.json();
+      const data: MigrationResponse = await res.json();
       console.log('Preview response:', data);
-
-      // Check if we got valid data
-      if (!data.original) {
-        console.error('Invalid preview response - missing original query');
-        setError('Invalid preview response from server');
-        return;
-      }
 
       setPreview(data);
 
-      // Show warning if no migrated query
-      if (!data.migrated) {
-        console.warn('No migrated query in response');
+      if (data.status === 'failed') {
+        // Don't set global error string if we have structured errors, let the UI handle it
+        if (!data.errorCode) {
+          setError(data.message || 'Preview failed');
+        }
       }
+
     } catch (err: any) {
       console.error('Preview error:', err);
       setError(`Preview failed: ${err.message}`);
@@ -149,10 +126,10 @@ function App() {
         body: JSON.stringify({ dryRun: false, force })
       });
 
-      const data = await res.json();
+      const data: MigrationResponse = await res.json();
       console.log('Migration response:', data);
 
-      if (data.status === 'success' && data.newId) {
+      if (data.status === 'ok' && data.newId) {
         const migration: MigratedCard = {
           oldId: currentCard.id,
           newId: data.newId,
@@ -162,19 +139,15 @@ function App() {
         saveMigratedCard(migration);
         setSuccess(`✓ Card ${currentCard.id} migrated successfully as Card ${data.newId}`);
 
-        // Move to next card after brief delay
-        setTimeout(() => {
-          if (currentCardIndex < cards.length - 1) {
-            setCurrentCardIndex(currentCardIndex + 1);
-            setPreview(null);
-            setSuccess(null);
-          }
-        }, 2000);
+        // Update preview to show success state
+        setPreview(data);
+
       } else {
-        // Show detailed error from backend
-        const errorMsg = data.error || data.errors?.join(', ') || 'Migration failed - unknown error';
+        const errorMsg = data.message || 'Migration failed - unknown error';
         console.error('Migration failed:', errorMsg, data);
         setError(`Migration failed: ${errorMsg}`);
+        // Update preview to show error state
+        setPreview(data);
       }
     } catch (err: any) {
       console.error('Migration error:', err);
@@ -184,7 +157,7 @@ function App() {
     }
   };
 
-  const goToCard = (index: number) => {
+  const selectCard = (index: number) => {
     setCurrentCardIndex(index);
     setPreview(null);
     setError(null);
@@ -203,58 +176,23 @@ function App() {
     <div className="app-container">
       {/* Header */}
       <div className="app-header">
-        <h1>⚡ MetaMigrator</h1>
+        <h1>⚡ MetaMigrator Workbench</h1>
         <p>PostgreSQL → ClickHouse Migration Tool</p>
       </div>
 
-      {/* Progress Stats */}
-      <div className="glass-card" style={{ marginBottom: '2rem' }}>
-        <div className="grid-3">
-          <div className="stat-card">
-            <div className="stat-value">{migratedCards.length}</div>
-            <div className="stat-label">Migrated</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-value">{cards.length - migratedCards.length}</div>
-            <div className="stat-label">Remaining</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-value">{progressPercent}%</div>
-            <div className="stat-label">Complete</div>
-          </div>
-        </div>
+      {/* Main Layout */}
+      <div className="workbench-layout">
 
-        {/* Progress Bar */}
-        <div style={{
-          width: '100%',
-          height: '8px',
-          background: 'rgba(255,255,255,0.1)',
-          borderRadius: '10px',
-          marginTop: '1.5rem',
-          overflow: 'hidden'
-        }}>
-          <div style={{
-            width: `${progressPercent}%`,
-            height: '100%',
-            background: 'linear-gradient(90deg, #10b981 0%, #059669 100%)',
-            transition: 'width 0.5s ease',
-            borderRadius: '10px'
-          }} />
-        </div>
-      </div>
-
-      <div className="grid-2">
-        {/* Left: Card List */}
-        <div className="glass-card">
-          <h2 style={{ marginBottom: '1rem', fontSize: '1.5rem' }}>📋 Cards</h2>
-
-          {error && (
-            <div className="alert alert-error" style={{ marginBottom: '1rem' }}>
-              {error}
+        {/* Left Pane: Card List */}
+        <div className="glass-card card-list-pane">
+          <div className="pane-header">
+            <h2>📋 Cards ({cards.length})</h2>
+            <div className="progress-mini">
+              <div className="progress-bar" style={{ width: `${progressPercent}%` }}></div>
             </div>
-          )}
+          </div>
 
-          <div className="card-list">
+          <div className="card-list-scroll">
             {cards.map((card, index) => {
               const migrated = isCardMigrated(card.id);
               const migratedInfo = getMigratedInfo(card.id);
@@ -263,225 +201,133 @@ function App() {
                 <div
                   key={card.id}
                   className={`card-item ${index === currentCardIndex ? 'selected' : ''} ${migrated ? 'migrated' : ''}`}
-                  onClick={() => goToCard(index)}
+                  onClick={() => selectCard(index)}
                 >
-                  <div>
-                    <div style={{ fontWeight: 600 }}>
+                  <div className="card-item-content">
+                    <div className="card-name">
                       #{card.id} {card.name}
                     </div>
-                    {migrated && migratedInfo && (
-                      <div style={{ fontSize: '0.85rem', color: 'var(--success)', marginTop: '0.25rem' }}>
-                        → Card #{migratedInfo.newId}
+                    {migrated && (
+                      <div className="card-status">
+                        ✓ #{migratedInfo?.newId}
                       </div>
                     )}
                   </div>
-                  {migrated ? (
-                    <span className="status-badge success">✓ Migrated</span>
-                  ) : (
-                    <span className="status-badge pending">Pending</span>
-                  )}
                 </div>
               );
             })}
-
             {cards.length === 0 && !error && (
-              <div style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
-                No cards found
-              </div>
+              <div className="empty-state">No cards found</div>
             )}
           </div>
         </div>
 
-        {/* Right: Current Card Workflow */}
-        <div className="glass-card">
+        {/* Right Pane: Card Detail */}
+        <div className="glass-card card-detail-pane">
           {currentCard ? (
-            <>
-              <div style={{ marginBottom: '2rem' }}>
-                <h2 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>
-                  🎯 Card #{currentCard.id}
-                </h2>
-                <p style={{ color: 'var(--text-secondary)' }}>{currentCard.name}</p>
-              </div>
-
-              {/* Workflow Steps */}
-              <div className="workflow-steps">
-                <div className={`workflow-step ${!preview ? 'active' : 'completed'}`}>
-                  <div className="workflow-step-number">1</div>
-                  <div className="workflow-step-label">Check</div>
+            <div className="detail-content">
+              <div className="detail-header">
+                <div>
+                  <h2>🎯 Card #{currentCard.id}</h2>
+                  <p className="subtitle">{currentCard.name}</p>
                 </div>
-                <div className={`workflow-step ${preview && !isMigrated ? 'active' : preview && isMigrated ? 'completed' : ''}`}>
-                  <div className="workflow-step-number">2</div>
-                  <div className="workflow-step-label">Review</div>
-                </div>
-                <div className={`workflow-step ${isMigrated ? 'completed' : ''}`}>
-                  <div className="workflow-step-number">3</div>
-                  <div className="workflow-step-label">Migrate</div>
-                </div>
-                <div className={`workflow-step ${isMigrated ? 'active' : ''}`}>
-                  <div className="workflow-step-number">4</div>
-                  <div className="workflow-step-label">Verify</div>
+                <div className="actions">
+                  {preview && (
+                    <button onClick={previewCard} className="btn btn-secondary btn-sm" disabled={loading}>
+                      🔄 Refresh Preview
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Success Message */}
-              {success && (
-                <div className="alert alert-success fade-in">
-                  {success}
-                </div>
-              )}
-
-              {/* Already Migrated */}
-              {isMigrated && (() => {
-                const info = getMigratedInfo(currentCard.id);
-                return info ? (
-                  <div className="alert alert-info fade-in" style={{ marginTop: '1rem' }}>
-                    <div style={{ flex: 1 }}>
-                      ✓ Already migrated as Card #{info.newId}
-                    </div>
-                    <a
-                      href={info.cardUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn btn-primary"
-                      style={{ marginLeft: '1rem' }}
-                    >
-                      🔗 View in Metabase
-                    </a>
-                  </div>
-                ) : null;
-              })()}
-
-              {/* Step 1: Check */}
-              {!preview && !isMigrated && (
-                <div className="fade-in" style={{ marginTop: '2rem' }}>
-                  <button
-                    onClick={previewCard}
-                    disabled={loading}
-                    className="btn btn-primary"
-                    style={{ width: '100%' }}
-                  >
-                    {loading ? '🔄 Checking mappings...' : '🔍 Check Card & Preview Migration'}
+              {/* Initial Action */}
+              {!preview && !isMigrated && !loading && (
+                <div className="empty-state">
+                  <button onClick={previewCard} className="btn btn-primary btn-lg">
+                    🔍 Check Card & Preview Migration
                   </button>
                 </div>
               )}
 
-              {/* Step 2 & 3: Review & Migrate */}
-              {preview && !isMigrated && (
-                <div className="fade-in" style={{ marginTop: '2rem' }}>
-                  {/* Warnings */}
-                  {preview.warnings && preview.warnings.length > 0 && (
-                    <div className="alert alert-warning" style={{ marginBottom: '1rem' }}>
-                      <div>
-                        <strong>⚠️ Warnings:</strong>
-                        <ul style={{ marginTop: '0.5rem', marginLeft: '1.5rem' }}>
-                          {preview.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                        </ul>
-                      </div>
+              {loading && <div className="spinner-container"><div className="spinner"></div><p>Processing...</p></div>}
+
+              {/* Preview / Result Area */}
+              {preview && (
+                <div className="preview-area fade-in">
+
+                  {/* Status Messages */}
+                  {preview.status === 'failed' && (
+                    <div className="alert alert-error">
+                      <strong>❌ Migration Check Failed</strong>
+                      {preview.errorCode && <div className="error-code">{preview.errorCode}</div>}
+                      <p>{preview.message}</p>
+                      {preview.details && <pre className="error-details">{JSON.stringify(preview.details, null, 2)}</pre>}
                     </div>
                   )}
 
-                  {/* Errors */}
-                  {preview.errors && preview.errors.length > 0 && (
-                    <div className="alert alert-error" style={{ marginBottom: '1rem' }}>
-                      <div>
-                        <strong>❌ Errors:</strong>
-                        <ul style={{ marginTop: '0.5rem', marginLeft: '1.5rem' }}>
-                          {preview.errors.map((e, i) => <li key={i}>{e}</li>)}
-                        </ul>
-                        <p style={{ marginTop: '1rem', fontSize: '0.9rem' }}>
-                          Fix these issues before migrating
-                        </p>
+                  {success && <div className="alert alert-success">{success}</div>}
+
+                  {/* Unmatched Mappings UI */}
+                  {(preview.unmatchedTables?.length || 0) > 0 || (preview.unmatchedFields?.length || 0) > 0 ? (
+                    <UnmatchedMapping
+                      unmatchedTables={preview.unmatchedTables || []}
+                      unmatchedFields={preview.unmatchedFields || []}
+                      targetDbId={targetDbId}
+                      onMappingUpdated={previewCard}
+                    />
+                  ) : null}
+
+                  {/* Queries Comparison */}
+                  <div className="query-comparison">
+                    <div className="query-box">
+                      <h3>📄 Original (Postgres)</h3>
+                      <div className="code-block">
+                        <pre>{JSON.stringify(preview.originalQuery || {}, null, 2)}</pre>
                       </div>
                     </div>
-                  )}
-
-                  {/* Preview Queries - Side by Side */}
-                  <div style={{ marginBottom: '1.5rem' }}>
-                    <div className="grid-2">
-                      <div>
-                        <h3 style={{ fontSize: '1.1rem', marginBottom: '0.75rem', color: 'var(--warning)' }}>
-                          📄 Original Query (PostgreSQL)
-                        </h3>
-                        <div className="code-block">
-                          <pre>{JSON.stringify(preview.original, null, 2)}</pre>
-                        </div>
-                      </div>
-
-                      <div>
-                        <h3 style={{ fontSize: '1.1rem', marginBottom: '0.75rem', color: 'var(--success)' }}>
-                          ✨ Migrated Query (ClickHouse)
-                        </h3>
-                        <div className="code-block">
-                          <pre>{preview.migrated ? JSON.stringify(preview.migrated, null, 2) : 'No migration preview available'}</pre>
-                        </div>
+                    <div className="query-box">
+                      <h3>✨ Migrated (ClickHouse)</h3>
+                      <div className="code-block">
+                        <pre>{preview.migratedQuery ? JSON.stringify(preview.migratedQuery, null, 2) : 'No migration generated'}</pre>
                       </div>
                     </div>
                   </div>
 
-                  {/* Migration Buttons */}
-                  <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem' }}>
+                  {/* Warnings */}
+                  {preview.warnings && preview.warnings.length > 0 && (
+                    <div className="alert alert-warning">
+                      <strong>⚠️ Warnings:</strong>
+                      <ul>{preview.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="action-bar">
                     <button
                       onClick={() => migrateCard(false)}
-                      disabled={migrating || (preview.errors && preview.errors.length > 0)}
-                      className="btn btn-success"
-                      style={{ flex: 1 }}
+                      disabled={migrating || preview.status === 'failed'}
+                      className="btn btn-success btn-lg"
                     >
-                      {migrating ? '🔄 Migrating...' : '✓ Migrate Card'}
+                      {migrating ? 'Migrating...' : '✓ Migrate Card'}
                     </button>
 
                     {preview.status === 'already_migrated' && (
-                      <button
-                        onClick={() => migrateCard(true)}
-                        disabled={migrating}
-                        className="btn btn-warning"
-                      >
-                        🔄 Re-migrate & Overwrite
+                      <button onClick={() => migrateCard(true)} className="btn btn-warning">
+                        🔄 Re-migrate (Overwrite)
                       </button>
                     )}
 
-                    <button
-                      onClick={() => setPreview(null)}
-                      className="btn btn-secondary"
-                    >
-                      Cancel
-                    </button>
+                    {preview.cardUrl && (
+                      <a href={preview.cardUrl} target="_blank" rel="noreferrer" className="btn btn-primary">
+                        🔗 View in Metabase
+                      </a>
+                    )}
                   </div>
                 </div>
               )}
-
-              {/* Loading Spinner */}
-              {loading && <div className="spinner" />}
-
-              {/* Navigation */}
-              <div style={{
-                display: 'flex',
-                gap: '1rem',
-                marginTop: '2rem',
-                paddingTop: '1.5rem',
-                borderTop: '1px solid rgba(255,255,255,0.1)'
-              }}>
-                <button
-                  onClick={() => goToCard(currentCardIndex - 1)}
-                  disabled={currentCardIndex === 0}
-                  className="btn btn-secondary"
-                  style={{ flex: 1 }}
-                >
-                  ← Previous
-                </button>
-                <button
-                  onClick={() => goToCard(currentCardIndex + 1)}
-                  disabled={currentCardIndex >= cards.length - 1}
-                  className="btn btn-secondary"
-                  style={{ flex: 1 }}
-                >
-                  Next →
-                </button>
-              </div>
-            </>
-          ) : (
-            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
-              Select a card to begin
             </div>
+          ) : (
+            <div className="empty-state">Select a card from the list to begin</div>
           )}
         </div>
       </div>

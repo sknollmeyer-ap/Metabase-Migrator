@@ -1,6 +1,7 @@
 import { MetabaseClient } from './MetabaseClient';
 import { config } from '../config';
 import { storage } from './StorageService';
+import { UnmatchedTable, UnmatchedField, FieldMetadata } from '../types';
 
 interface TableMap {
     [oldId: number]: number;
@@ -21,7 +22,8 @@ export class MetadataMapper {
     private client: MetabaseClient;
     public tableMap: TableMap = {};
     public fieldMap: FieldMap = {};
-    public missingTables: string[] = [];
+    public missingTables: UnmatchedTable[] = [];
+    public missingFields: UnmatchedField[] = [];
     private fieldInfo: Record<number, FieldInfo> = {};
     private newTablesById: Map<number, any> = new Map();
     private oldFieldTargetTable: Record<number, number | undefined> = {};
@@ -39,8 +41,10 @@ export class MetadataMapper {
         const newTables = tables.filter((t: any) => t.db_id === config.newDbId);
 
         console.log(`Found ${oldTables.length} tables in old DB and ${newTables.length} tables in new DB.`);
-        if (oldTables.length > 0) console.log('Sample Old Table:', oldTables[0].schema, oldTables[0].name);
-        if (newTables.length > 0) console.log('Sample New Table:', newTables[0].schema, newTables[0].name);
+
+        // Clear previous missing items
+        this.missingTables = [];
+        this.missingFields = [];
 
         // 1) Use confirmed table mappings from workflow if available
         await this.loadTableMappingsFromWorkflow();
@@ -65,7 +69,11 @@ export class MetadataMapper {
             if (match) {
                 this.tableMap[oldTable.id] = match.id;
             } else {
-                this.missingTables.push(`${oldTable.schema}.${oldTable.name}`);
+                this.missingTables.push({
+                    sourceTableId: oldTable.id,
+                    sourceTableName: oldTable.name,
+                    schema: oldTable.schema
+                });
             }
         }
 
@@ -125,6 +133,13 @@ export class MetadataMapper {
                 if (match) {
                     this.fieldMap[oldField.id] = match.id;
                     this.oldFieldTargetTable[oldField.id] = newTable.id;
+                } else {
+                    this.missingFields.push({
+                        sourceFieldId: oldField.id,
+                        sourceFieldName: oldField.name,
+                        sourceTableName: oldTableName,
+                        sourceTableId: oldTable.id
+                    });
                 }
 
                 // Store candidates for UI selection
@@ -191,18 +206,36 @@ export class MetadataMapper {
         return this.fieldInfo[oldId];
     }
 
+    async setTableMapping(oldTableId: number, newTableId: number) {
+        this.tableMap[oldTableId] = newTableId;
+
+        // Remove from missing tables if present
+        this.missingTables = this.missingTables.filter(t => t.sourceTableId !== oldTableId);
+
+        await storage.saveTableMappings([{
+            old_table_id: oldTableId,
+            old_table_name: 'Unknown', // We should look this up if possible
+            suggested_new_table_id: newTableId,
+            suggested_new_table_name: 'Manual Override',
+            confidence: 1.0,
+            mapping_type: 'manual',
+            confirmed: true
+        }]);
+    }
+
     async setFieldOverride(oldId: number, newId: number) {
         this.fieldMap[oldId] = newId;
 
+        // Remove from missing fields if present
+        this.missingFields = this.missingFields.filter(f => f.sourceFieldId !== oldId);
+
         try {
-            // We need to fetch existing mapping or create new one
-            // For now, we'll just upsert a manual mapping
             const fieldInfo = this.fieldInfo[oldId];
 
             await storage.saveFieldMappings([{
                 old_field_id: oldId,
                 old_field_name: fieldInfo?.name || 'Unknown',
-                old_table_id: 0, // We might not have this easily available here without lookup
+                old_table_id: 0,
                 suggested_new_field_id: newId,
                 suggested_new_field_name: 'Manual Override',
                 new_table_id: 0,
@@ -217,5 +250,13 @@ export class MetadataMapper {
 
     getFieldCandidates(oldFieldId: number): Array<{ id: number; name: string; display_name?: string }> {
         return this.fieldCandidates[oldFieldId] || [];
+    }
+
+    getUnmappedTables(): UnmatchedTable[] {
+        return this.missingTables;
+    }
+
+    getUnmappedFields(): UnmatchedField[] {
+        return this.missingFields;
     }
 }

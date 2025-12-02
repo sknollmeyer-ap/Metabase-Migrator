@@ -9,6 +9,7 @@ import { config } from '../config';
 import fs from 'fs-extra';
 import path from 'path';
 import { FieldMapperAgent } from './FieldMapperAgent';
+import { MigrationResponse, MigrationErrorCode, UnmatchedTable, UnmatchedField } from '../types';
 
 export class MigrationManager {
     private client: MetabaseClient;
@@ -51,17 +52,22 @@ export class MigrationManager {
         return this.generateReport(results, dryRun);
     }
 
-    async migrateCardWithDependencies(cardId: number, dryRun: boolean = true, visited: Set<number> = new Set(), collectionId: number | null = null, force: boolean = false): Promise<any> {
+    async migrateCardWithDependencies(cardId: number, dryRun: boolean = true, visited: Set<number> = new Set(), collectionId: number | null = null, force: boolean = false): Promise<MigrationResponse> {
         if (visited.has(cardId)) {
-            return { oldId: cardId, newId: null, status: 'skipped', reason: 'circular dependency detected' };
+            return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: 'Circular dependency detected' };
         }
         visited.add(cardId);
 
         console.log(`\n=== Migrating card ${cardId} with dependencies ===`);
 
         // 1. Fetch the card
-        const card = await this.client.getCard(cardId);
-        console.log(`Fetched card: ${card.name} (ID: ${card.id})`);
+        let card;
+        try {
+            card = await this.client.getCard(cardId);
+            console.log(`Fetched card: ${card.name} (ID: ${card.id})`);
+        } catch (error: any) {
+            return { status: 'failed', errorCode: MigrationErrorCode.METABASE_API_ERROR, message: `Failed to fetch card ${cardId}: ${error.message}` };
+        }
 
         // 2. Extract dependencies
         const dependencies = CardDependencyResolver.extractCardReferences(card.dataset_query);
@@ -76,6 +82,15 @@ export class MigrationManager {
                 // Don't force dependencies, only the target card
                 const depResult = await this.migrateCardWithDependencies(depId, dryRun, visited, collectionId, false);
                 dependencyResults.push(depResult);
+
+                if (depResult.status === 'failed') {
+                    return {
+                        status: 'failed',
+                        errorCode: MigrationErrorCode.DEPENDENCY_NOT_MIGRATED,
+                        message: `Dependency card ${depId} failed to migrate`,
+                        details: depResult
+                    };
+                }
             } else {
                 console.log(`Dependency card ${depId} already migrated to ${this.cardIdMapping.get(depId)}`);
             }
@@ -96,14 +111,14 @@ export class MigrationManager {
             }
 
             return {
-                oldId: cardId,
-                newId: newCardId,
                 status: 'already_migrated',
+                oldId: cardId,
                 cardName: card.name,
+                newId: newCardId,
                 originalQuery: card.dataset_query,
                 migratedQuery: migratedQuery,
                 cardUrl: `${this.client.getBaseUrl()}/question/${newCardId}`,
-                dependencies: dependencyResults
+                details: { dependencies: dependencyResults }
             };
         }
 
@@ -113,38 +128,47 @@ export class MigrationManager {
 
         return {
             ...result,
+            oldId: cardId,
             cardName: card.name,
             originalQuery: card.dataset_query,
-            dependencies: dependencyResults
+            details: { ...result.details, dependencies: dependencyResults }
         };
     }
 
-    private async migrateCard(card: any, dryRun: boolean, collectionId: number | null = null, force: boolean = false): Promise<any> {
+    private async migrateCard(card: any, dryRun: boolean, collectionId: number | null = null, force: boolean = false): Promise<MigrationResponse> {
         try {
             const warnings: string[] = [];
             const errors: string[] = [];
             let migratedQuery: any;
+            let unmatchedTables: UnmatchedTable[] = [];
+            let unmatchedFields: UnmatchedField[] = [];
 
             if (!card.dataset_query) {
-                throw new Error('Card missing dataset_query');
+                return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: 'Card missing dataset_query' };
             }
 
             if (card.dataset_query.type === 'query') {
-                const { query, warnings: mbqlWarnings } = this.mbqlMigrator.migrateQuery(card.dataset_query);
-                migratedQuery = query;
-                warnings.push(...mbqlWarnings);
+                const result = this.mbqlMigrator.migrateQuery(card.dataset_query);
+                migratedQuery = result.query;
+                warnings.push(...result.warnings);
+                unmatchedTables = result.unmatchedTables;
+                unmatchedFields = result.unmatchedFields;
             } else if (card.dataset_query.type === 'native') {
                 const sql = card.dataset_query.native?.query || '';
                 if (!sql) {
-                    throw new Error('Native query is empty');
+                    return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: 'Native query is empty' };
                 }
 
                 const context = await this.buildSqlContext();
                 const translatedSql = await this.sqlMigrator.translateSql(sql, context);
 
                 if (translatedSql.toUpperCase().startsWith('ERROR:')) {
-                    errors.push(translatedSql);
-                    throw new Error(translatedSql);
+                    return {
+                        status: 'failed',
+                        errorCode: MigrationErrorCode.SQL_TRANSLATION_ERROR,
+                        message: translatedSql,
+                        originalQuery: card.dataset_query
+                    };
                 }
 
                 migratedQuery = {
@@ -156,22 +180,67 @@ export class MigrationManager {
                     }
                 };
             } else {
-                throw new Error(`Unknown query type: ${card.dataset_query.type}`);
+                return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: `Unknown query type: ${card.dataset_query.type}` };
             }
 
             if (warnings.length > 0) {
                 console.warn(`Warnings for card ${card.id}:`, warnings.join(' | '));
             }
 
+            // Check for unmatched items
+            if (unmatchedTables.length > 0) {
+                return {
+                    status: 'failed',
+                    errorCode: MigrationErrorCode.MISSING_MAPPING_TABLE,
+                    message: 'Unmatched tables found',
+                    unmatchedTables,
+                    unmatchedFields,
+                    originalQuery: card.dataset_query,
+                    migratedQuery // Return partial migration
+                };
+            }
+
+            if (unmatchedFields.length > 0) {
+                // We might want to allow migration with warnings for fields, but for now let's be strict or warn
+                // The requirement says "surface these unmatched elements".
+                // If it's a dry run, we definitely want to show them.
+                // If it's a real run, maybe we fail?
+                // Let's treat it as a failure/warning state that prevents auto-migration unless forced (but force logic isn't fully here for fields)
+                // Actually, let's return them so the UI can show them.
+                if (dryRun) {
+                    // For dry run, we return them but status might be 'ok' or 'failed' depending on strictness.
+                    // Let's return status 'failed' so the UI highlights it, but provide the query.
+                    return {
+                        status: 'failed',
+                        errorCode: MigrationErrorCode.MISSING_MAPPING_FIELD,
+                        message: 'Unmatched fields found',
+                        unmatchedTables,
+                        unmatchedFields,
+                        originalQuery: card.dataset_query,
+                        migratedQuery
+                    };
+                } else {
+                    // For real migration, if we have unmapped fields, the query will likely fail in Metabase.
+                    // So we should probably fail.
+                    return {
+                        status: 'failed',
+                        errorCode: MigrationErrorCode.MISSING_MAPPING_FIELD,
+                        message: 'Unmatched fields found',
+                        unmatchedTables,
+                        unmatchedFields,
+                        originalQuery: card.dataset_query,
+                        migratedQuery
+                    };
+                }
+            }
+
             if (dryRun) {
                 console.log('  [DRY RUN] Would create card with migrated query');
                 return {
-                    oldId: card.id,
-                    newId: null,
-                    status: 'dry_run',
+                    status: 'ok',
+                    originalQuery: card.dataset_query,
                     migratedQuery,
-                    warnings,
-                    errors
+                    warnings
                 };
             }
 
@@ -190,14 +259,18 @@ export class MigrationManager {
             let created;
             const existingNewId = this.cardIdMapping.get(card.id);
 
-            if (existingNewId && force) {
-                console.log(`  Updating existing migrated card ${existingNewId}...`);
-                await this.client.updateCard(existingNewId, newCard);
-                created = { id: existingNewId };
-                console.log(`  ✓ Updated card ${created.id}: ${config.metabaseBaseUrl}/question/${created.id}`);
-            } else {
-                created = await this.client.createCard(newCard);
-                console.log(`  ✓ Created new card ${created.id}: ${config.metabaseBaseUrl}/question/${created.id}`);
+            try {
+                if (existingNewId && force) {
+                    console.log(`  Updating existing migrated card ${existingNewId}...`);
+                    await this.client.updateCard(existingNewId, newCard);
+                    created = { id: existingNewId };
+                    console.log(`  ✓ Updated card ${created.id}: ${config.metabaseBaseUrl}/question/${created.id}`);
+                } else {
+                    created = await this.client.createCard(newCard);
+                    console.log(`  ✓ Created new card ${created.id}: ${config.metabaseBaseUrl}/question/${created.id}`);
+                }
+            } catch (err: any) {
+                return { status: 'failed', errorCode: MigrationErrorCode.METABASE_API_ERROR, message: `Metabase API error: ${err.message}` };
             }
 
             // Test the card and fix any errors
@@ -207,13 +280,12 @@ export class MigrationManager {
             await this.cardIdMapping.set(card.id, fixedCardId);
 
             return {
-                oldId: card.id,
+                status: 'ok',
                 newId: fixedCardId,
-                status: 'migrated',
                 cardUrl: `${config.metabaseBaseUrl}/question/${fixedCardId}`,
+                originalQuery: card.dataset_query,
                 migratedQuery,
-                warnings,
-                errors
+                warnings
             };
         } catch (error: any) {
             const message = error?.message || String(error);
@@ -227,12 +299,10 @@ export class MigrationManager {
             });
 
             return {
-                oldId: card.id,
-                newId: null,
                 status: 'failed',
-                error: message,
-                warnings: [],
-                errors: [message]
+                errorCode: MigrationErrorCode.UNKNOWN_ERROR,
+                message: message,
+                originalQuery: card.dataset_query
             };
         }
     }
@@ -334,7 +404,7 @@ CORRECTED SQL:
         const report = {
             summary: {
                 total: results.length,
-                migrated: results.filter(r => r.status === 'migrated').length,
+                migrated: results.filter(r => r.status === 'ok').length,
                 waiting: this.waitingArea.getAll().length,
                 alreadyMigrated: results.filter(r => r.status === 'already_migrated').length,
                 dryRun
@@ -390,13 +460,13 @@ CORRECTED SQL:
         }
 
         context.push('=== UNMAPPED TABLES ===');
-        this.mapper.missingTables.forEach(tableName => {
-            const table = oldTablesByName.get(tableName);
-            if (table) {
-                context.push(`${tableName} (ID: ${table.id})`);
-                context.push(`  Columns: ${table.fields.map((f: any) => `${f.name}:${f.base_type}`).join(', ')}`);
+        this.mapper.missingTables.forEach(table => {
+            const t = oldTablesByName.get(`${table.schema}.${table.sourceTableName}`);
+            if (t) {
+                context.push(`${table.schema}.${table.sourceTableName} (ID: ${t.id})`);
+                context.push(`  Columns: ${t.fields.map((f: any) => `${f.name}:${f.base_type}`).join(', ')}`);
             } else {
-                context.push(tableName);
+                context.push(`${table.schema}.${table.sourceTableName}`);
             }
         });
 

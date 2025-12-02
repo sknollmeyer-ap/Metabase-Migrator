@@ -273,6 +273,105 @@ app.post('/api/suggest-field-mapping', async (req, res) => {
     }
 });
 
+// GET /api/metadata/tables - Get all tables for a database
+app.get('/api/metadata/tables', async (req, res) => {
+    try {
+        const dbId = parseInt(req.query.databaseId as string, 10);
+        if (isNaN(dbId)) {
+            return res.status(400).json({ error: 'databaseId is required' });
+        }
+
+        const mgr = await ensureInitialized();
+        const client = mgr.getClient();
+        const metadata = await client.getDatabaseMetadata(dbId);
+
+        const tables = (metadata.tables || []).map((t: any) => ({
+            id: t.id,
+            name: t.name,
+            schema: t.schema,
+            display_name: t.display_name
+        }));
+
+        res.json(tables);
+    } catch (error: any) {
+        console.error('Metadata tables error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/metadata/fields - Get all fields for a table
+app.get('/api/metadata/fields', async (req, res) => {
+    try {
+        const dbId = parseInt(req.query.databaseId as string, 10);
+        const tableId = parseInt(req.query.tableId as string, 10);
+
+        if (isNaN(dbId) || isNaN(tableId)) {
+            return res.status(400).json({ error: 'databaseId and tableId are required' });
+        }
+
+        const mgr = await ensureInitialized();
+        const client = mgr.getClient();
+
+        // We might need to fetch full DB metadata if getTable doesn't exist or is slow
+        // But getDatabaseMetadata is cached usually
+        const metadata = await client.getDatabaseMetadata(dbId);
+        const table = metadata.tables?.find((t: any) => t.id === tableId);
+
+        if (!table) {
+            return res.status(404).json({ error: 'Table not found' });
+        }
+
+        const fields = (table.fields || []).map((f: any) => ({
+            id: f.id,
+            name: f.name,
+            display_name: f.display_name,
+            base_type: f.base_type,
+            table_id: tableId
+        }));
+
+        res.json(fields);
+    } catch (error: any) {
+        console.error('Metadata fields error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/mappings/table - Manually set table mapping
+app.post('/api/mappings/table', async (req, res) => {
+    try {
+        const { sourceTableId, targetTableId } = req.body;
+        if (typeof sourceTableId !== 'number' || typeof targetTableId !== 'number') {
+            return res.status(400).json({ error: 'sourceTableId and targetTableId are required numbers' });
+        }
+
+        const mgr = await ensureInitialized();
+        await mgr.getMapper().setTableMapping(sourceTableId, targetTableId);
+
+        res.json({ status: 'ok', sourceTableId, targetTableId });
+    } catch (error: any) {
+        console.error('Table mapping error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/mappings/field - Manually set field mapping
+app.post('/api/mappings/field', async (req, res) => {
+    try {
+        const { sourceFieldId, targetFieldId } = req.body;
+        if (typeof sourceFieldId !== 'number' || typeof targetFieldId !== 'number') {
+            return res.status(400).json({ error: 'sourceFieldId and targetFieldId are required numbers' });
+        }
+
+        const mgr = await ensureInitialized();
+        await mgr.setFieldOverride(sourceFieldId, targetFieldId);
+
+        res.json({ status: 'ok', sourceFieldId, targetFieldId });
+    } catch (error: any) {
+        console.error('Field mapping error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`Ready to migrate Metabase cards!`);
