@@ -60,11 +60,11 @@ app.get('/api/status', async (req, res) => {
     }
 });
 
-// GET /api/cards/:dbId
-app.get('/api/cards/:dbId', async (req, res) => {
+// GET /api/cards
+app.get('/api/cards', async (req, res) => {
     try {
         const mgr = await ensureInitialized();
-        const dbId = parseInt(req.params.dbId, 10);
+        const dbId = parseInt(req.query.db as string, 10);
         const allCards = await mgr.getClient().getAllCards();
         const filtered = allCards.filter((c: any) => c.dataset_query?.database === dbId);
 
