@@ -18,13 +18,5 @@
             "src": "/(.*)",
             "dest": "/ui/$1"
         }
-    ],
-    "env": {
-        "METABASE_BASE_URL": "@metabase_base_url",
-        "METABASE_API_KEY": "@metabase_api_key",
-        "GEMINI_API_KEY": "@gemini_api_key",
-        "OLD_DB_ID": "@old_db_id",
-        "NEW_DB_ID": "@new_db_id",
-        "GEMINI_MODEL": "@gemini_model"
-    }
+    ]
 }
