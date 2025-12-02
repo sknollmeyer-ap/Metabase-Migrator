@@ -101,10 +101,33 @@ function App() {
     setPreview(null);
 
     try {
+      console.log(`Fetching preview for card ${currentCard.id}...`);
       const res = await fetch(`/api/preview/${currentCard.id}`, { method: 'POST' });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error('Preview API error:', res.status, errorText);
+        throw new Error(`API returned ${res.status}: ${errorText}`);
+      }
+
       const data = await res.json();
+      console.log('Preview response:', data);
+
+      // Check if we got valid data
+      if (!data.original) {
+        console.error('Invalid preview response - missing original query');
+        setError('Invalid preview response from server');
+        return;
+      }
+
       setPreview(data);
+
+      // Show warning if no migrated query
+      if (!data.migrated) {
+        console.warn('No migrated query in response');
+      }
     } catch (err: any) {
+      console.error('Preview error:', err);
       setError(`Preview failed: ${err.message}`);
     } finally {
       setLoading(false);
@@ -119,6 +142,7 @@ function App() {
     setSuccess(null);
 
     try {
+      console.log(`Migrating card ${currentCard.id}, force=${force}...`);
       const res = await fetch(`/api/migrate/${currentCard.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,6 +150,7 @@ function App() {
       });
 
       const data = await res.json();
+      console.log('Migration response:', data);
 
       if (data.status === 'success' && data.newId) {
         const migration: MigratedCard = {
@@ -146,9 +171,13 @@ function App() {
           }
         }, 2000);
       } else {
-        setError(data.error || 'Migration failed');
+        // Show detailed error from backend
+        const errorMsg = data.error || data.errors?.join(', ') || 'Migration failed - unknown error';
+        console.error('Migration failed:', errorMsg, data);
+        setError(`Migration failed: ${errorMsg}`);
       }
     } catch (err: any) {
+      console.error('Migration error:', err);
       setError(`Migration failed: ${err.message}`);
     } finally {
       setMigrating(false);
