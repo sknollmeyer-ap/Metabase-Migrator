@@ -366,22 +366,28 @@ function App() {
                     </div>
                   )}
 
-                  {/* Preview Queries */}
+                  {/* Preview Queries - Side by Side */}
                   <div style={{ marginBottom: '1.5rem' }}>
-                    <h3 style={{ fontSize: '1.1rem', marginBottom: '0.75rem' }}>Original Query</h3>
-                    <div className="code-block">
-                      <pre>{JSON.stringify(preview.original, null, 2)}</pre>
-                    </div>
-                  </div>
+                    <div className="grid-2">
+                      <div>
+                        <h3 style={{ fontSize: '1.1rem', marginBottom: '0.75rem', color: 'var(--warning)' }}>
+                          📄 Original Query (PostgreSQL)
+                        </h3>
+                        <div className="code-block">
+                          <pre>{JSON.stringify(preview.original, null, 2)}</pre>
+                        </div>
+                      </div>
 
-                  {preview.migrated && (
-                    <div style={{ marginBottom: '1.5rem' }}>
-                      <h3 style={{ fontSize: '1.1rem', marginBottom: '0.75rem' }}>Migrated Query</h3>
-                      <div className="code-block">
-                        <pre>{JSON.stringify(preview.migrated, null, 2)}</pre>
+                      <div>
+                        <h3 style={{ fontSize: '1.1rem', marginBottom: '0.75rem', color: 'var(--success)' }}>
+                          ✨ Migrated Query (ClickHouse)
+                        </h3>
+                        <div className="code-block">
+                          <pre>{preview.migrated ? JSON.stringify(preview.migrated, null, 2) : 'No migration preview available'}</pre>
+                        </div>
                       </div>
                     </div>
-                  )}
+                  </div>
 
                   {/* Migration Buttons */}
                   <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem' }}>
