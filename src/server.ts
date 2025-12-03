@@ -15,6 +15,15 @@ app.use(express.json());
 // Global state
 let manager: MigrationManager | null = null;
 let isInitialized = false;
+const MIGRATION_TIMEOUT_MS = parseInt(process.env.MIGRATION_TIMEOUT_MS || '300000', 10); // 5 minutes
+const PREVIEW_TIMEOUT_MS = parseInt(process.env.PREVIEW_TIMEOUT_MS || '120000', 10); // 2 minutes
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage = 'TIMEOUT'): Promise<T> {
+    return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs))
+    ]);
+}
 
 // Initialize on first request
 async function ensureInitialized() {
@@ -102,15 +111,18 @@ app.get('/api/card-mappings', async (req, res) => {
 
 // POST /api/preview/:cardId - Preview migration (dry-run)
 app.post('/api/preview/:cardId', async (req, res) => {
+    const cardId = parseInt((req.params as any).cardId, 10);
     try {
         const mgr = await ensureInitialized();
-        const cardId = parseInt(req.params.cardId, 10);
 
         console.log(`\n========================================`);
         console.log(`Preview request for card ${cardId}`);
         console.log(`========================================`);
 
-        const result = await mgr.migrateCardWithDependencies(cardId, true, new Set(), null, false);
+        const result = await withTimeout(
+            mgr.migrateCardWithDependencies(cardId, true, new Set(), null, false),
+            PREVIEW_TIMEOUT_MS
+        );
 
         console.log('Migration result:', JSON.stringify(result, null, 2));
 
@@ -118,12 +130,27 @@ app.post('/api/preview/:cardId', async (req, res) => {
         res.json(result);
     } catch (error: any) {
         console.error('Preview error:', error);
+
+        if (error?.message === 'TIMEOUT') {
+            return res.status(504).json({
+                status: 'failed',
+                errorCode: 'TIMEOUT',
+                message: 'Preview timed out. Please try again or run the migration locally for complex queries.',
+                oldId: cardId,
+                cardName: `Card ${cardId}`,
+                originalQuery: {},
+                migratedQuery: null,
+                warnings: [],
+                errors: ['Preview exceeded the timeout limit']
+            });
+        }
+
         res.status(500).json({
             status: 'failed',
             errorCode: 'UNKNOWN_ERROR',
             message: error.message,
-            oldId: parseInt(req.params.cardId, 10),
-            cardName: `Card ${req.params.cardId}`,
+            oldId: cardId,
+            cardName: `Card ${cardId}`,
             originalQuery: {},
             migratedQuery: null,
             warnings: [],
@@ -134,9 +161,9 @@ app.post('/api/preview/:cardId', async (req, res) => {
 
 // POST /api/migrate/:id - Actually perform migration
 app.post('/api/migrate/:id', async (req, res) => {
+    const cardId = parseInt(req.params.id, 10);
     try {
         const mgr = await ensureInitialized();
-        const cardId = parseInt(req.params.id, 10);
         const dryRun = req.body.dryRun !== false; // default to true
         const collectionId = req.body.collection_id || null; // optional collection override
         const force = req.body.force === true; // optional force override
@@ -146,18 +173,36 @@ app.post('/api/migrate/:id', async (req, res) => {
         if (collectionId) console.log(`Target collection: ${collectionId}`);
         console.log(`========================================`);
 
-        const result = await mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force);
+        const result = await withTimeout(
+            mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force),
+            MIGRATION_TIMEOUT_MS
+        );
 
         console.log('Migration result:', JSON.stringify(result, null, 2));
         res.json(result);
     } catch (error: any) {
         console.error('Migration error:', error);
+
+        if (error?.message === 'TIMEOUT') {
+            return res.status(504).json({
+                status: 'failed',
+                errorCode: 'TIMEOUT',
+                message: 'Migration timeout - SQL translation or Metabase API call took too long. Try again or run locally.',
+                oldId: cardId,
+                cardName: `Card ${cardId}`,
+                originalQuery: {},
+                migratedQuery: null,
+                warnings: [],
+                errors: ['Exceeded migration timeout limit']
+            });
+        }
+
         res.status(500).json({
             status: 'failed',
             errorCode: 'UNKNOWN_ERROR',
             message: error.message || 'Migration failed with unknown error',
-            oldId: parseInt(req.params.cardId, 10),
-            cardName: `Card ${req.params.cardId}`,
+            oldId: cardId,
+            cardName: `Card ${cardId}`,
             originalQuery: {},
             migratedQuery: null,
             warnings: [],

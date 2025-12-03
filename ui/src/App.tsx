@@ -29,6 +29,17 @@ function App() {
   const [returnToCardId, setReturnToCardId] = useState<number | null>(null);
   const defaultDbId = 6;
   const targetDbId = 10;
+  const REQUEST_TIMEOUT_MS = 120000; // avoid hanging UI if API never returns
+
+  const fetchWithTimeout = async (input: RequestInfo | URL, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 
   // Load cards and migrated cards on mount
   useEffect(() => {
@@ -137,7 +148,7 @@ function App() {
 
     try {
       console.log(`Fetching preview for card ${currentCard.id}...`);
-      const res = await fetch(`/api/preview/${currentCard.id}`, { method: 'POST' });
+      const res = await fetchWithTimeout(`/api/preview/${currentCard.id}`, { method: 'POST' });
 
       if (!res.ok) {
         const errorText = await res.text();
@@ -159,7 +170,11 @@ function App() {
 
     } catch (err: any) {
       console.error('Preview error:', err);
-      setError(`Preview failed: ${err.message}`);
+      if (err?.name === 'AbortError') {
+        setError('Preview timed out. Please try again or run the migration locally for complex queries.');
+      } else {
+        setError(`Preview failed: ${err.message}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -174,7 +189,7 @@ function App() {
 
     try {
       console.log(`Migrating card ${currentCard.id}, force=${force}...`);
-      const res = await fetch(`/api/migrate/${currentCard.id}`, {
+      const res = await fetchWithTimeout(`/api/migrate/${currentCard.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dryRun: false, force })
@@ -223,7 +238,11 @@ function App() {
       }
     } catch (err: any) {
       console.error('Migration error:', err);
-      setError(`Migration failed: ${err.message}`);
+      if (err?.name === 'AbortError') {
+        setError('Migration timed out. Please retry or run locally for complex queries.');
+      } else {
+        setError(`Migration failed: ${err.message}`);
+      }
     } finally {
       setMigrating(false);
     }

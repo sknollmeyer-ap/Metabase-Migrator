@@ -6,8 +6,8 @@
     "framework": null,
     "functions": {
         "api/index.ts": {
-            "maxDuration": 60,
-            "memory": 1024
+            "maxDuration": 300,
+            "memory": 3008
         }
     },
     "rewrites": [

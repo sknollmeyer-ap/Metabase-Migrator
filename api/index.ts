@@ -15,6 +15,15 @@ app.use(express.json());
 
 // Global state
 let manager: MigrationManager | null = null;
+const MIGRATION_TIMEOUT_MS = 290000; // 290 seconds (Vercel Pro limit is 300s)
+const PREVIEW_TIMEOUT_MS = 120000; // 2 minutes for previews
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, message = 'TIMEOUT'): Promise<T> => {
+    return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs))
+    ]);
+};
 
 const ensureInitialized = async (): Promise<MigrationManager> => {
     if (!manager) {
@@ -207,7 +216,10 @@ app.post('/api/preview/:cardId', async (req, res) => {
         console.log(`Preview request for card ${cardId}`);
         console.log(`========================================`);
 
-        const result = await mgr.migrateCardWithDependencies(cardId, true, new Set(), null, false);
+        const result = await withTimeout(
+            mgr.migrateCardWithDependencies(cardId, true, new Set(), null, false),
+            PREVIEW_TIMEOUT_MS
+        );
 
         console.log('Migration result:', JSON.stringify(result, null, 2));
 
@@ -215,6 +227,21 @@ app.post('/api/preview/:cardId', async (req, res) => {
         res.json(result);
     } catch (error: any) {
         console.error('Preview error:', error);
+
+        if (error?.message === 'TIMEOUT') {
+            return res.status(504).json({
+                status: 'failed',
+                errorCode: 'TIMEOUT',
+                message: 'Preview timed out. Please try again or run locally for complex queries.',
+                oldId: parseInt(req.params.cardId, 10),
+                cardName: `Card ${req.params.cardId}`,
+                originalQuery: {},
+                migratedQuery: null,
+                warnings: [],
+                errors: ['Preview exceeded the timeout limit']
+            });
+        }
+
         res.status(500).json({
             status: 'failed',
             errorCode: 'UNKNOWN_ERROR',
@@ -243,15 +270,10 @@ app.post('/api/migrate/:id', async (req, res) => {
         if (collectionId) console.log(`Target collection: ${collectionId}`);
         console.log(`========================================`);
 
-        // Add timeout protection (55 seconds - leave margin for Vercel's 60s limit)
-        const TIMEOUT_MS = 55000;
-
-        const migrationPromise = mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force);
-        const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error('TIMEOUT')), TIMEOUT_MS);
-        });
-
-        const result = await Promise.race([migrationPromise, timeoutPromise]);
+        const result = await withTimeout(
+            mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force),
+            MIGRATION_TIMEOUT_MS
+        );
 
         console.log('Migration result:', JSON.stringify(result, null, 2));
         res.json(result);
@@ -269,7 +291,7 @@ app.post('/api/migrate/:id', async (req, res) => {
                 originalQuery: {},
                 migratedQuery: null,
                 warnings: [],
-                errors: ['Exceeded 55 second timeout limit. This usually happens with complex SQL migrations.']
+                errors: ['Exceeded migration timeout limit. This usually happens with complex SQL migrations or slow API responses.']
             });
         }
 
