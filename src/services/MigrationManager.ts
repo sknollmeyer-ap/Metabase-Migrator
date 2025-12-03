@@ -269,8 +269,14 @@ export class MigrationManager {
 
             // Create or Update the new card
             console.log('  Creating/Updating card in Metabase...');
+
+            // Check if card name already has [ClickHouse] suffix to avoid duplication
+            const cardName = card.name.includes('[ClickHouse]')
+                ? card.name
+                : `${card.name} [ClickHouse]`;
+
             const newCard = {
-                name: `${card.name} [ClickHouse]`,
+                name: cardName,
                 description: card.description || `Migrated from card ${card.id}`,
                 display: card.display,
                 visualization_settings: this.cleanVisualizationSettings(card.visualization_settings),
@@ -289,11 +295,26 @@ export class MigrationManager {
                     created = { id: existingNewId };
                     console.log(`  ✓ Updated card ${created.id}: ${config.metabaseBaseUrl}/question/${created.id}`);
                 } else {
+                    console.log(`  Creating new card with name: "${cardName}"`);
                     created = await this.client.createCard(newCard);
                     console.log(`  ✓ Created new card ${created.id}: ${config.metabaseBaseUrl}/question/${created.id}`);
                 }
             } catch (err: any) {
-                return { status: 'failed', errorCode: MigrationErrorCode.METABASE_API_ERROR, message: `Metabase API error: ${err.message}` };
+                console.error(`  ✗ Failed to create/update card:`, err);
+                const errorMessage = err.response?.data?.message || err.message || 'Unknown error';
+                const errorDetails = err.response?.data || {};
+                return {
+                    status: 'failed',
+                    errorCode: MigrationErrorCode.METABASE_API_ERROR,
+                    message: `Metabase API error: ${errorMessage}`,
+                    details: {
+                        error: errorMessage,
+                        apiResponse: errorDetails,
+                        cardName: cardName
+                    },
+                    originalQuery: card.dataset_query,
+                    migratedQuery
+                };
             }
 
             // Test the card and fix any errors
