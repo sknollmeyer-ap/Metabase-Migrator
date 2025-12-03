@@ -243,12 +243,36 @@ app.post('/api/migrate/:id', async (req, res) => {
         if (collectionId) console.log(`Target collection: ${collectionId}`);
         console.log(`========================================`);
 
-        const result = await mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force);
+        // Add timeout protection (55 seconds - leave margin for Vercel's 60s limit)
+        const TIMEOUT_MS = 55000;
+
+        const migrationPromise = mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force);
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('TIMEOUT')), TIMEOUT_MS);
+        });
+
+        const result = await Promise.race([migrationPromise, timeoutPromise]);
 
         console.log('Migration result:', JSON.stringify(result, null, 2));
         res.json(result);
     } catch (error: any) {
         console.error('Migration error:', error);
+
+        // Special handling for timeout
+        if (error.message === 'TIMEOUT') {
+            return res.status(504).json({
+                status: 'failed',
+                errorCode: 'TIMEOUT',
+                message: 'Migration timeout - SQL translation took too long. Try using the API directly or run migration locally.',
+                oldId: parseInt(req.params.id, 10),
+                cardName: `Card ${req.params.id}`,
+                originalQuery: {},
+                migratedQuery: null,
+                warnings: [],
+                errors: ['Exceeded 55 second timeout limit. This usually happens with complex SQL migrations.']
+            });
+        }
+
         res.status(500).json({
             status: 'failed',
             errorCode: 'UNKNOWN_ERROR',
