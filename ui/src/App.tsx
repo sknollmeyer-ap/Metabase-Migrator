@@ -26,6 +26,7 @@ function App() {
   const [migratedCards, setMigratedCards] = useState<MigratedCard[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [returnToCardId, setReturnToCardId] = useState<number | null>(null);
   const defaultDbId = 6;
   const targetDbId = 10;
 
@@ -34,6 +35,15 @@ function App() {
     fetchCards();
     loadMigratedCards();
   }, []);
+
+  // Auto-refresh preview when returning to a card if it was the parent
+  useEffect(() => {
+    if (currentCard && returnToCardId === currentCard.id) {
+      // We just returned to the parent. Clear the return ID and refresh preview.
+      setReturnToCardId(null);
+      previewCard();
+    }
+  }, [currentCardIndex, returnToCardId]);
 
   const loadMigratedCards = () => {
     const stored = localStorage.getItem('migratedCards');
@@ -142,6 +152,17 @@ function App() {
         // Update preview to show success state
         setPreview(data);
 
+        // Handle return flow
+        if (returnToCardId) {
+          setTimeout(() => {
+            const parentIndex = cards.findIndex(c => c.id === returnToCardId);
+            if (parentIndex !== -1) {
+              selectCard(parentIndex);
+              // The useEffect will handle clearing returnToCardId and refreshing preview
+            }
+          }, 1500); // Brief delay to show success
+        }
+
       } else {
         const errorMsg = data.message || 'Migration failed - unknown error';
         console.error('Migration failed:', errorMsg, data);
@@ -162,6 +183,7 @@ function App() {
     setPreview(null);
     setError(null);
     setSuccess(null);
+    // Note: We don't clear returnToCardId here because we might be navigating TO the dependency
   };
 
   const getMigratedInfo = (cardId: number) => {
@@ -230,6 +252,11 @@ function App() {
                 <div>
                   <h2>🎯 Card #{currentCard.id}</h2>
                   <p className="subtitle">{currentCard.name}</p>
+                  {returnToCardId && returnToCardId !== currentCard.id && (
+                    <div style={{ fontSize: '0.85rem', color: 'var(--primary-light)', marginTop: '0.5rem' }}>
+                      ↩ You are resolving a dependency for Card #{returnToCardId}
+                    </div>
+                  )}
                 </div>
                 <div className="actions">
                   {preview && (
@@ -265,28 +292,36 @@ function App() {
                       <p style={{ marginTop: '0.5rem' }}>{preview.message}</p>
 
                       {/* Dependency Navigation */}
-                      {preview.errorCode === 'DEPENDENCY_NOT_MIGRATED' && (() => {
-                        const match = preview.message?.match(/Dependency card (\d+) failed/);
-                        const depId = match ? parseInt(match[1]) : (preview.details as any)?.oldId;
+                      {(() => {
+                        // Check for dependency error either by code or message content
+                        const isDependencyError =
+                          preview.errorCode === 'DEPENDENCY_NOT_MIGRATED' ||
+                          preview.message?.includes('Dependency card');
 
-                        if (depId) {
-                          return (
-                            <div style={{ marginTop: '1rem' }}>
-                              <button
-                                className="btn btn-secondary"
-                                onClick={() => {
-                                  const index = cards.findIndex(c => c.id === depId);
-                                  if (index !== -1) {
-                                    selectCard(index);
-                                  } else {
-                                    alert(`Card ${depId} not found in the list.`);
-                                  }
-                                }}
-                              >
-                                👉 Go to Dependency Card #{depId}
-                              </button>
-                            </div>
-                          );
+                        if (isDependencyError) {
+                          const match = preview.message?.match(/Dependency card (\d+)/);
+                          const depId = match ? parseInt(match[1]) : (preview.details as any)?.oldId;
+
+                          if (depId) {
+                            return (
+                              <div style={{ marginTop: '1rem' }}>
+                                <button
+                                  className="btn btn-secondary"
+                                  onClick={() => {
+                                    const index = cards.findIndex(c => c.id === depId);
+                                    if (index !== -1) {
+                                      setReturnToCardId(currentCard.id);
+                                      selectCard(index);
+                                    } else {
+                                      alert(`Card ${depId} not found in the list.`);
+                                    }
+                                  }}
+                                >
+                                  👉 Go to Dependency Card #{depId}
+                                </button>
+                              </div>
+                            );
+                          }
                         }
                         return null;
                       })()}
