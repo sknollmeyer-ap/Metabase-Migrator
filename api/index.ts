@@ -17,6 +17,8 @@ app.use(express.json());
 let manager: MigrationManager | null = null;
 const MIGRATION_TIMEOUT_MS = 290000; // 290 seconds (Vercel Pro limit is 300s)
 const PREVIEW_TIMEOUT_MS = 120000; // 2 minutes for previews
+const INITIALIZATION_TIMEOUT_MS = 30000; // 30 seconds warmup guard
+let initPromise: Promise<MigrationManager> | null = null;
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, message = 'TIMEOUT'): Promise<T> => {
     return await Promise.race([
@@ -26,15 +28,26 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, message = 
 };
 
 const ensureInitialized = async (): Promise<MigrationManager> => {
-    if (!manager) {
-        // MigrationManager now initializes its own client internally or we can pass one if needed,
-        // but the constructor takes 0 arguments in the current implementation.
-        // However, we might want to pass config if the constructor supports it.
-        // Checking MigrationManager.ts, constructor takes 0 args.
-        manager = new MigrationManager();
-        await manager.initialize();
+    if (manager) return manager;
+
+    if (!initPromise) {
+        initPromise = (async () => {
+            console.log('Initializing migration manager (cold start)...');
+            const mgr = new MigrationManager();
+            await mgr.initialize();
+            manager = mgr;
+            console.log('Initialization complete');
+            return mgr;
+        })();
     }
-    return manager;
+
+    try {
+        return await withTimeout(initPromise, INITIALIZATION_TIMEOUT_MS, 'INIT_TIMEOUT');
+    } catch (err) {
+        initPromise = null;
+        manager = null;
+        throw err;
+    }
 };
 
 // Health check
@@ -228,6 +241,20 @@ app.post('/api/preview/:cardId', async (req, res) => {
     } catch (error: any) {
         console.error('Preview error:', error);
 
+        if (error?.message === 'INIT_TIMEOUT') {
+            return res.status(503).json({
+                status: 'failed',
+                errorCode: 'INIT_TIMEOUT',
+                message: 'Server is still warming up (metadata load). Please retry in a few seconds.',
+                oldId: parseInt(req.params.cardId, 10),
+                cardName: `Card ${req.params.cardId}`,
+                originalQuery: {},
+                migratedQuery: null,
+                warnings: [],
+                errors: ['Initialization timeout']
+            });
+        }
+
         if (error?.message === 'TIMEOUT') {
             return res.status(504).json({
                 status: 'failed',
@@ -279,6 +306,20 @@ app.post('/api/migrate/:id', async (req, res) => {
         res.json(result);
     } catch (error: any) {
         console.error('Migration error:', error);
+
+        if (error?.message === 'INIT_TIMEOUT') {
+            return res.status(503).json({
+                status: 'failed',
+                errorCode: 'INIT_TIMEOUT',
+                message: 'Server is still warming up (metadata load). Please retry in a few seconds.',
+                oldId: parseInt(req.params.id, 10),
+                cardName: `Card ${req.params.id}`,
+                originalQuery: {},
+                migratedQuery: null,
+                warnings: [],
+                errors: ['Initialization timeout']
+            });
+        }
 
         // Special handling for timeout
         if (error.message === 'TIMEOUT') {

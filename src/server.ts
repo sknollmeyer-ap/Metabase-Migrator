@@ -14,9 +14,10 @@ app.use(express.json());
 
 // Global state
 let manager: MigrationManager | null = null;
-let isInitialized = false;
+let initPromise: Promise<MigrationManager> | null = null;
 const MIGRATION_TIMEOUT_MS = parseInt(process.env.MIGRATION_TIMEOUT_MS || '300000', 10); // 5 minutes
 const PREVIEW_TIMEOUT_MS = parseInt(process.env.PREVIEW_TIMEOUT_MS || '120000', 10); // 2 minutes
+const INITIALIZATION_TIMEOUT_MS = parseInt(process.env.INIT_TIMEOUT_MS || '30000', 10); // 30 seconds
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage = 'TIMEOUT'): Promise<T> {
     return await Promise.race([
@@ -27,14 +28,27 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMes
 
 // Initialize on first request
 async function ensureInitialized() {
-    if (!isInitialized) {
-        console.log('Initializing...');
-        manager = new MigrationManager();
-        await manager.initialize();
-        isInitialized = true;
-        console.log('Initialization complete');
+    if (manager) return manager;
+
+    if (!initPromise) {
+        initPromise = (async () => {
+            console.log('Initializing migration manager (cold start)...');
+            const mgr = new MigrationManager();
+            await mgr.initialize();
+            manager = mgr;
+            console.log('Initialization complete');
+            return mgr;
+        })();
     }
-    return manager!;
+
+    try {
+        return await withTimeout(initPromise, INITIALIZATION_TIMEOUT_MS, 'INIT_TIMEOUT');
+    } catch (err) {
+        // Reset so next request can try again
+        initPromise = null;
+        manager = null;
+        throw err;
+    }
 }
 
 // Lightweight health endpoint for connectivity checks
@@ -57,7 +71,7 @@ app.get('/api/status', async (req, res) => {
     try {
         const mgr = await ensureInitialized();
         res.json({
-            initialized: isInitialized,
+            initialized: !!manager,
             tablesMapped: Object.keys(mgr.getTableMap()).length,
             fieldsMapped: Object.keys(mgr.getFieldMap()).length,
             missingTables: mgr.getMissingTables().length
@@ -131,6 +145,20 @@ app.post('/api/preview/:cardId', async (req, res) => {
     } catch (error: any) {
         console.error('Preview error:', error);
 
+        if (error?.message === 'INIT_TIMEOUT') {
+            return res.status(503).json({
+                status: 'failed',
+                errorCode: 'INIT_TIMEOUT',
+                message: 'Server is still warming up (metadata load). Please retry in a few seconds.',
+                oldId: cardId,
+                cardName: `Card ${cardId}`,
+                originalQuery: {},
+                migratedQuery: null,
+                warnings: [],
+                errors: ['Initialization timeout']
+            });
+        }
+
         if (error?.message === 'TIMEOUT') {
             return res.status(504).json({
                 status: 'failed',
@@ -182,6 +210,20 @@ app.post('/api/migrate/:id', async (req, res) => {
         res.json(result);
     } catch (error: any) {
         console.error('Migration error:', error);
+
+        if (error?.message === 'INIT_TIMEOUT') {
+            return res.status(503).json({
+                status: 'failed',
+                errorCode: 'INIT_TIMEOUT',
+                message: 'Server is still warming up (metadata load). Please retry in a few seconds.',
+                oldId: cardId,
+                cardName: `Card ${cardId}`,
+                originalQuery: {},
+                migratedQuery: null,
+                warnings: [],
+                errors: ['Initialization timeout']
+            });
+        }
 
         if (error?.message === 'TIMEOUT') {
             return res.status(504).json({
