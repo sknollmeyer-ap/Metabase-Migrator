@@ -180,6 +180,13 @@ function App() {
         body: JSON.stringify({ dryRun: false, force })
       });
 
+      // Check if response is OK before parsing
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error('Migration API error:', res.status, errorText);
+        throw new Error(`API returned ${res.status}: ${errorText}`);
+      }
+
       const data: MigrationResponse = await res.json();
       console.log('Migration response:', data);
 

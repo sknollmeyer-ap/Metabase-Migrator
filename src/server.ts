@@ -148,10 +148,21 @@ app.post('/api/migrate/:id', async (req, res) => {
 
         const result = await mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force);
 
+        console.log('Migration result:', JSON.stringify(result, null, 2));
         res.json(result);
     } catch (error: any) {
         console.error('Migration error:', error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({
+            status: 'failed',
+            errorCode: 'UNKNOWN_ERROR',
+            message: error.message || 'Migration failed with unknown error',
+            oldId: parseInt(req.params.cardId, 10),
+            cardName: `Card ${req.params.cardId}`,
+            originalQuery: {},
+            migratedQuery: null,
+            warnings: [],
+            errors: [error.message]
+        });
     }
 });
 
