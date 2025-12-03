@@ -52,24 +52,42 @@ Rules:
 
 ClickHouse SQL:`;
 
-        try {
-            const result = await this.model.generateContent(prompt);
-            const response = await result.response;
-            let text = response.text();
-            // Strip any code fences
-            text = text.replace(/```sql/gi, '').replace(/```/g, '').trim();
+        let retries = 0;
+        const maxRetries = 3;
+        const baseDelay = 2000; // 2 seconds
 
-            // Cache the translation
+        while (true) {
             try {
-                await storage.saveSqlTranslation(cacheKey, text);
-            } catch (err) {
-                console.warn('  Failed to cache translation:', err);
-            }
+                const result = await this.model.generateContent(prompt);
+                const response = await result.response;
+                let text = response.text();
+                // Strip any code fences
+                text = text.replace(/```sql/gi, '').replace(/```/g, '').trim();
 
-            return text;
-        } catch (error: any) {
-            const message = error?.message || String(error);
-            throw new Error(`[GoogleGenerativeAI Error]: ${message}`);
+                // Cache the translation
+                try {
+                    await storage.saveSqlTranslation(cacheKey, text);
+                } catch (err) {
+                    console.warn('  Failed to cache translation:', err);
+                }
+
+                return text;
+            } catch (error: any) {
+                const message = error?.message || String(error);
+
+                // Check for rate limit error (429)
+                if (message.includes('429') || message.includes('Too Many Requests') || message.includes('Resource exhausted')) {
+                    if (retries < maxRetries) {
+                        retries++;
+                        const delay = baseDelay * Math.pow(2, retries - 1); // Exponential backoff: 2s, 4s, 8s
+                        console.warn(`  ⚠️ Gemini API rate limited. Retrying in ${delay}ms (Attempt ${retries}/${maxRetries})...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+                }
+
+                throw new Error(`[GoogleGenerativeAI Error]: ${message}`);
+            }
         }
     }
 
