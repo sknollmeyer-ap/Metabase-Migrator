@@ -94,30 +94,18 @@ app.post('/api/preview/:cardId', async (req, res) => {
 
         console.log('Migration result:', JSON.stringify(result, null, 2));
 
-        // Transform to match frontend CardPreview interface
-        const preview = {
-            cardId: result.oldId || cardId,
-            cardName: result.cardName || `Card ${cardId}`,
-            original: result.originalQuery || {},
-            migrated: result.migratedQuery || null,
-            warnings: result.warnings || [],
-            errors: result.errors || [],
-            status: result.status,
-            newId: result.newId,
-            cardUrl: result.cardUrl
-        };
-
-        console.log('Sending preview response:', JSON.stringify(preview, null, 2));
-
-        res.json(preview);
+        // Return the result directly as it matches MigrationResponse interface
+        res.json(result);
     } catch (error: any) {
         console.error('Preview error:', error);
         res.status(500).json({
-            error: error.message,
-            cardId: parseInt(req.params.cardId, 10),
+            status: 'failed',
+            errorCode: 'UNKNOWN_ERROR',
+            message: error.message,
+            oldId: parseInt(req.params.cardId, 10),
             cardName: `Card ${req.params.cardId}`,
-            original: {},
-            migrated: null,
+            originalQuery: {},
+            migratedQuery: null,
             warnings: [],
             errors: [error.message]
         });
