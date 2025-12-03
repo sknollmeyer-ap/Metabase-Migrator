@@ -213,6 +213,51 @@ export class StorageService {
             await fs.writeJson(filePath, value, { spaces: 2 });
         }
     }
+
+    // ======================
+    // SQL TRANSLATION CACHE
+    // ======================
+
+    async getSqlTranslation(cacheKey: string): Promise<string | null> {
+        if (this.useSupabase) {
+            const { data, error } = await supabase
+                .from('sql_translation_cache')
+                .select('translated_sql')
+                .eq('cache_key', cacheKey)
+                .single();
+
+            if (error) {
+                if (error.code === 'PGRST116') return null; // Not found
+                throw error;
+            }
+            return data?.translated_sql || null;
+        } else {
+            const filePath = path.join(this.fileBasePath, 'sql_cache', `${cacheKey}.txt`);
+            if (await fs.pathExists(filePath)) {
+                return await fs.readFile(filePath, 'utf-8');
+            }
+            return null;
+        }
+    }
+
+    async saveSqlTranslation(cacheKey: string, translatedSql: string): Promise<void> {
+        if (this.useSupabase) {
+            const { error } = await supabase
+                .from('sql_translation_cache')
+                .upsert({
+                    cache_key: cacheKey,
+                    translated_sql: translatedSql,
+                    created_at: new Date().toISOString()
+                }, { onConflict: 'cache_key' });
+
+            if (error) throw error;
+        } else {
+            const dirPath = path.join(this.fileBasePath, 'sql_cache');
+            await fs.ensureDir(dirPath);
+            const filePath = path.join(dirPath, `${cacheKey}.txt`);
+            await fs.writeFile(filePath, translatedSql, 'utf-8');
+        }
+    }
 }
 
 // Singleton instance

@@ -1,5 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { config } from '../config';
+import { storage } from './StorageService';
+import crypto from 'crypto';
 
 /**
  * Translates Postgres SQL to ClickHouse SQL using Gemini.
@@ -13,39 +15,67 @@ export class SqlMigrator {
         }
 
         const genAI = new GoogleGenerativeAI(config.geminiApiKey);
-        // Default to a newer, widely available model; override via GEMINI_MODEL env if needed.
-        const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+        // Use the fastest model for better performance within Vercel timeout limits
+        const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash-8b';
         this.model = genAI.getGenerativeModel({ model: modelName });
     }
 
     async translateSql(originalSql: string, context: string): Promise<string> {
-        const prompt = `
-You are converting a Metabase SQL question from PostgreSQL to ClickHouse.
+        // Generate cache key from SQL + context
+        const cacheKey = this.generateCacheKey(originalSql, context);
 
-Original PostgreSQL Query:
+        // Check cache first
+        try {
+            const cached = await storage.getSqlTranslation(cacheKey);
+            if (cached) {
+                console.log('  ✓ Using cached SQL translation');
+                return cached;
+            }
+        } catch (err) {
+            console.warn('  Cache lookup failed, proceeding with translation:', err);
+        }
+
+        // Optimized, more concise prompt
+        const prompt = `Convert PostgreSQL to ClickHouse SQL.
+
+PostgreSQL:
 ${originalSql}
 
-Context (schema/table mappings and any notes):
+Schema mappings:
 ${context}
 
-Instructions:
-1) Translate the SQL to valid ClickHouse dialect.
-2) Preserve semantics and parameter names (e.g. {{param}}).
-3) Adjust for ClickHouse differences (date/time, casts, LIMIT/OFFSET, array handling, boolean literals).
-4) Return ONLY the translated SQL (no markdown or explanations).
-5) If translation is impossible due to missing tables/features, return: ERROR: <reason>.
-        `.trim();
+Rules:
+- Keep {{param}} syntax
+- Use ClickHouse date/time functions
+- Return ONLY the SQL (no markdown)
+- If impossible, return: ERROR: <reason>
+
+ClickHouse SQL:`;
 
         try {
             const result = await this.model.generateContent(prompt);
             const response = await result.response;
             let text = response.text();
-            // Strip any code fences the model might return
+            // Strip any code fences
             text = text.replace(/```sql/gi, '').replace(/```/g, '').trim();
+
+            // Cache the translation
+            try {
+                await storage.saveSqlTranslation(cacheKey, text);
+            } catch (err) {
+                console.warn('  Failed to cache translation:', err);
+            }
+
             return text;
         } catch (error: any) {
             const message = error?.message || String(error);
             throw new Error(`[GoogleGenerativeAI Error]: ${message}`);
         }
+    }
+
+    private generateCacheKey(sql: string, context: string): string {
+        const hash = crypto.createHash('sha256');
+        hash.update(sql + context);
+        return hash.digest('hex');
     }
 }
