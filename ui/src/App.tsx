@@ -360,9 +360,41 @@ function App() {
 
                   {/* Warnings */}
                   {preview.warnings && preview.warnings.length > 0 && (
-                    <div className="alert alert-warning">
+                    <div className="alert alert-warning" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
                       <strong>⚠️ Warnings:</strong>
                       <ul>{preview.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+
+                      {/* Check for nested card warnings and add navigation */}
+                      {(() => {
+                        // Look for "Could not map nested card ID 1774"
+                        const nestedCardWarning = preview.warnings.find(w => w.includes('Could not map nested card ID'));
+                        if (nestedCardWarning) {
+                          const match = nestedCardWarning.match(/nested card ID (\d+)/);
+                          const depId = match ? parseInt(match[1]) : null;
+
+                          if (depId) {
+                            return (
+                              <div style={{ marginTop: '1rem' }}>
+                                <button
+                                  className="btn btn-secondary"
+                                  onClick={() => {
+                                    const index = cards.findIndex(c => c.id === depId);
+                                    if (index !== -1) {
+                                      setReturnToCardId(currentCard.id);
+                                      selectCard(index);
+                                    } else {
+                                      alert(`Card ${depId} not found in the list.`);
+                                    }
+                                  }}
+                                >
+                                  👉 Go to Dependency Card #{depId}
+                                </button>
+                              </div>
+                            );
+                          }
+                        }
+                        return null;
+                      })()}
                     </div>
                   )}
 
