@@ -234,7 +234,11 @@ function App() {
 
   // Infinite scroll per section
   useEffect(() => {
-    const attachScroll = (ref: React.RefObject<HTMLDivElement>, key: 'onHold' | 'unmigrated' | 'migrated', length: number) => {
+    const attachScroll = (
+      ref: React.RefObject<HTMLDivElement | null>,
+      key: 'onHold' | 'unmigrated' | 'migrated',
+      length: number
+    ) => {
       const node = ref.current;
       if (!node) return () => {};
       const handler = () => {
