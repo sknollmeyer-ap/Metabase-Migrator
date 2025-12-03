@@ -101,7 +101,7 @@ body {
 }
 
 .card-list-pane {
-  width: 350px;
+  width: 525px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
