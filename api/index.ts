@@ -229,6 +229,40 @@ app.post('/api/preview/:cardId', async (req, res) => {
     }
 });
 
+// POST /api/migrate/:id - Actually perform migration
+app.post('/api/migrate/:id', async (req, res) => {
+    try {
+        const mgr = await ensureInitialized();
+        const cardId = parseInt(req.params.id, 10);
+        const dryRun = req.body.dryRun !== false; // default to true
+        const collectionId = req.body.collection_id || null; // optional collection override
+        const force = req.body.force === true; // optional force override
+
+        console.log(`\n========================================`);
+        console.log(`Migration request for card ${cardId} (dry-run: ${dryRun}, force: ${force})`);
+        if (collectionId) console.log(`Target collection: ${collectionId}`);
+        console.log(`========================================`);
+
+        const result = await mgr.migrateCardWithDependencies(cardId, dryRun, new Set(), collectionId, force);
+
+        console.log('Migration result:', JSON.stringify(result, null, 2));
+        res.json(result);
+    } catch (error: any) {
+        console.error('Migration error:', error);
+        res.status(500).json({
+            status: 'failed',
+            errorCode: 'UNKNOWN_ERROR',
+            message: error.message || 'Migration failed with unknown error',
+            oldId: parseInt(req.params.id, 10),
+            cardName: `Card ${req.params.id}`,
+            originalQuery: {},
+            migratedQuery: null,
+            warnings: [],
+            errors: [error.message]
+        });
+    }
+});
+
 // Export for Vercel serverless
 export default async (req: VercelRequest, res: VercelResponse) => {
     // Use the Express app as a request handler
