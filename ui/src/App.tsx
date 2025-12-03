@@ -257,11 +257,41 @@ function App() {
 
                   {/* Status Messages */}
                   {preview.status === 'failed' && (
-                    <div className="alert alert-error">
-                      <strong>❌ Migration Check Failed</strong>
-                      {preview.errorCode && <div className="error-code">{preview.errorCode}</div>}
-                      <p>{preview.message}</p>
-                      {preview.details && <pre className="error-details">{JSON.stringify(preview.details, null, 2)}</pre>}
+                    <div className="alert alert-error" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%' }}>
+                        <strong>❌ Migration Check Failed</strong>
+                        {preview.errorCode && <div className="error-code">{preview.errorCode}</div>}
+                      </div>
+                      <p style={{ marginTop: '0.5rem' }}>{preview.message}</p>
+
+                      {/* Dependency Navigation */}
+                      {preview.errorCode === 'DEPENDENCY_NOT_MIGRATED' && (() => {
+                        const match = preview.message?.match(/Dependency card (\d+) failed/);
+                        const depId = match ? parseInt(match[1]) : (preview.details as any)?.oldId;
+
+                        if (depId) {
+                          return (
+                            <div style={{ marginTop: '1rem' }}>
+                              <button
+                                className="btn btn-secondary"
+                                onClick={() => {
+                                  const index = cards.findIndex(c => c.id === depId);
+                                  if (index !== -1) {
+                                    selectCard(index);
+                                  } else {
+                                    alert(`Card ${depId} not found in the list.`);
+                                  }
+                                }}
+                              >
+                                👉 Go to Dependency Card #{depId}
+                              </button>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+
+                      {preview.details && <pre className="error-details" style={{ marginTop: '1rem', width: '100%' }}>{JSON.stringify(preview.details, null, 2)}</pre>}
                     </div>
                   )}
 
