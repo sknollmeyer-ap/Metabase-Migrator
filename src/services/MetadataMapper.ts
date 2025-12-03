@@ -218,7 +218,9 @@ export class MetadataMapper {
             suggested_new_table_id: newTableId,
             suggested_new_table_name: 'Manual Override',
             confidence: 1.0,
-            mapping_type: 'manual',
+            alternatives: [],
+            final_new_table_id: newTableId,
+            ignored: false,
             confirmed: true
         }]);
     }
