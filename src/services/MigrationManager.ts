@@ -536,4 +536,8 @@ CORRECTED SQL:
     getMapper() {
         return this.mapper;
     }
+
+    getCardIdMapping() {
+        return this.cardIdMapping;
+    }
 }

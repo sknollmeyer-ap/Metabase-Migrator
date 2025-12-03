@@ -80,6 +80,26 @@ app.get('/api/cards', async (req, res) => {
     }
 });
 
+// GET /api/card-mappings - Get all card ID mappings
+app.get('/api/card-mappings', async (req, res) => {
+    try {
+        const mgr = await ensureInitialized();
+        const mappings = mgr.getCardIdMapping().getAll();
+
+        // Convert Map to array of objects
+        const result = Array.from(mappings.entries()).map(([oldId, newId]) => ({
+            oldId,
+            newId,
+            cardUrl: `${mgr.getClient().getBaseUrl()}/question/${newId}`
+        }));
+
+        res.json(result);
+    } catch (error: any) {
+        console.error('Card mappings endpoint error:', error);
+        res.status(500).json({ error: error.message || 'Failed to load card mappings' });
+    }
+});
+
 // POST /api/preview/:cardId - Preview migration (dry-run)
 app.post('/api/preview/:cardId', async (req, res) => {
     try {

@@ -45,13 +45,57 @@ function App() {
     }
   }, [currentCardIndex, returnToCardId]);
 
-  const loadMigratedCards = () => {
-    const stored = localStorage.getItem('migratedCards');
-    if (stored) {
-      try {
-        setMigratedCards(JSON.parse(stored));
-      } catch {
-        setMigratedCards([]);
+  const loadMigratedCards = async () => {
+    try {
+      // First, load from localStorage
+      const stored = localStorage.getItem('migratedCards');
+      let localMappings: MigratedCard[] = [];
+      if (stored) {
+        try {
+          localMappings = JSON.parse(stored);
+        } catch {
+          localMappings = [];
+        }
+      }
+
+      // Then fetch from backend
+      const res = await fetch('/api/card-mappings');
+      if (res.ok) {
+        const backendMappings: MigratedCard[] = await res.json();
+
+        // Merge: backend is source of truth, but keep localStorage for timestamps
+        const merged = new Map<number, MigratedCard>();
+
+        // Add backend mappings first
+        backendMappings.forEach(m => {
+          merged.set(m.oldId, m);
+        });
+
+        // Update with localStorage timestamps if available
+        localMappings.forEach(local => {
+          const existing = merged.get(local.oldId);
+          if (existing) {
+            existing.timestamp = local.timestamp || Date.now();
+          }
+        });
+
+        const result = Array.from(merged.values());
+        setMigratedCards(result);
+        localStorage.setItem('migratedCards', JSON.stringify(result));
+      } else {
+        // Fallback to localStorage only
+        setMigratedCards(localMappings);
+      }
+    } catch (err) {
+      console.error('Failed to load migrated cards:', err);
+      // Fallback to localStorage
+      const stored = localStorage.getItem('migratedCards');
+      if (stored) {
+        try {
+          setMigratedCards(JSON.parse(stored));
+        } catch {
+          setMigratedCards([]);
+        }
       }
     }
   };
