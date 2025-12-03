@@ -30,10 +30,12 @@ function App() {
   const [onHoldIds, setOnHoldIds] = useState<number[]>([]);
   const [unmigratedOverrides, setUnmigratedOverrides] = useState<number[]>([]);
   const [visibleCounts, setVisibleCounts] = useState({ onHold: 10, unmigrated: 10, migrated: 10 });
+  const unmigratedRef = useRef<HTMLDivElement | null>(null);
+  const migratedRef = useRef<HTMLDivElement | null>(null);
+  const onHoldRef = useRef<HTMLDivElement | null>(null);
   const defaultDbId = 6;
   const targetDbId = 10;
   const REQUEST_TIMEOUT_MS = 120000; // avoid hanging UI if API never returns
-  const listRef = useRef<HTMLDivElement | null>(null);
 
   const fetchWithTimeout = async (input: RequestInfo | URL, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS) => {
     const controller = new AbortController();
@@ -230,24 +232,31 @@ function App() {
     }));
   }, [onHoldCards.length, unmigratedCards.length, migratedCardsList.length]);
 
-  // Infinite scroll for left pane sections
+  // Infinite scroll per section
   useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
-
-    const onScroll = () => {
-      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
-        setVisibleCounts(prev => ({
-          onHold: Math.min(onHoldCards.length, prev.onHold + 10),
-          unmigrated: Math.min(unmigratedCards.length, prev.unmigrated + 10),
-          migrated: Math.min(migratedCardsList.length, prev.migrated + 10)
-        }));
-      }
+    const attachScroll = (ref: React.RefObject<HTMLDivElement>, key: 'onHold' | 'unmigrated' | 'migrated', length: number) => {
+      const node = ref.current;
+      if (!node) return () => {};
+      const handler = () => {
+        if (node.scrollTop + node.clientHeight >= node.scrollHeight - 24) {
+          setVisibleCounts(prev => ({
+            ...prev,
+            [key]: Math.min(length, prev[key] + 10)
+          }));
+        }
+      };
+      node.addEventListener('scroll', handler);
+      return () => node.removeEventListener('scroll', handler);
     };
 
-    el.addEventListener('scroll', onScroll);
-    return () => el.removeEventListener('scroll', onScroll);
-  }, [onHoldCards.length, unmigratedCards.length, migratedCardsList.length]);
+    const cleanups = [
+      attachScroll(unmigratedRef, 'unmigrated', unmigratedCards.length),
+      attachScroll(migratedRef, 'migrated', migratedCardsList.length),
+      attachScroll(onHoldRef, 'onHold', onHoldCards.length)
+    ];
+
+    return () => cleanups.forEach(fn => fn());
+  }, [unmigratedCards.length, migratedCardsList.length, onHoldCards.length]);
 
   const previewCard = async () => {
     if (!currentCard) return;
@@ -394,99 +403,105 @@ function App() {
             </div>
           </div>
 
-          <div className="card-list-scroll" ref={listRef}>
+          <div className="card-list-scroll">
             <div className="card-section">
               <h3 className="section-header">Unmigrated Cards ({unmigratedCards.length})</h3>
-              {unmigratedCards.length === 0 ? (
-                <div className="empty-state">No unmigrated cards</div>
-              ) : (
-                unmigratedCards.slice(0, visibleCounts.unmigrated).map(card => {
-                  const index = cards.findIndex(c => c.id === card.id);
-                  return (
-                    <div
-                      key={card.id}
-                      className={`card-item ${index === currentCardIndex ? 'selected' : ''}`}
-                      onClick={() => selectCard(index)}
-                    >
-                      <div className="card-item-content">
-                        <div className="card-name">
-                          #{card.id} {card.name}
+              <div className="section-list" ref={unmigratedRef}>
+                {unmigratedCards.length === 0 ? (
+                  <div className="empty-state">No unmigrated cards</div>
+                ) : (
+                  unmigratedCards.slice(0, visibleCounts.unmigrated).map(card => {
+                    const index = cards.findIndex(c => c.id === card.id);
+                    return (
+                      <div
+                        key={card.id}
+                        className={`card-item ${index === currentCardIndex ? 'selected' : ''}`}
+                        onClick={() => selectCard(index)}
+                      >
+                        <div className="card-item-content">
+                          <div className="card-name">
+                            #{card.id} {card.name}
+                          </div>
+                          <button
+                            className="btn btn-secondary btn-xs"
+                            onClick={(e) => { e.stopPropagation(); addToOnHold(card.id); }}
+                          >
+                            Put on hold
+                          </button>
                         </div>
-                        <button
-                          className="btn btn-secondary btn-xs"
-                          onClick={(e) => { e.stopPropagation(); addToOnHold(card.id); }}
-                        >
-                          Put on hold
-                        </button>
                       </div>
-                    </div>
-                  );
-                })
-              )}
+                    );
+                  })
+                )}
+              </div>
             </div>
 
-            <div className="card-section" style={{ marginTop: '1.5rem' }}>
+            <div className="card-section">
               <h3 className="section-header">Migrated Cards ({migratedCardsList.length})</h3>
-              {migratedCardsList.length === 0 ? (
-                <div className="empty-state">No migrated cards</div>
-              ) : (
-                migratedCardsList.slice(0, visibleCounts.migrated).map(card => {
-                  const index = cards.findIndex(c => c.id === card.id);
-                  const migratedInfo = getMigratedInfo(card.id);
-                  return (
-                    <div
-                      key={card.id}
-                      className={`card-item ${index === currentCardIndex ? 'selected' : ''} migrated`}
-                      onClick={() => selectCard(index)}
-                    >
-                      <div className="card-item-content">
-                        <div className="card-name">
-                          #{card.id} {card.name}
+              <div className="section-list" ref={migratedRef}>
+                {migratedCardsList.length === 0 ? (
+                  <div className="empty-state">No migrated cards</div>
+                ) : (
+                  migratedCardsList.slice(0, visibleCounts.migrated).map(card => {
+                    const index = cards.findIndex(c => c.id === card.id);
+                    const migratedInfo = getMigratedInfo(card.id);
+                    return (
+                      <div
+                        key={card.id}
+                        className={`card-item ${index === currentCardIndex ? 'selected' : ''} migrated`}
+                        onClick={() => selectCard(index)}
+                      >
+                        <div className="card-item-content">
+                          <div className="card-name">
+                            #{card.id} {card.name}
+                          </div>
+                          <div className="card-status">
+                            {"-> "}{migratedInfo?.newId}
+                          </div>
+                          <button
+                            className="btn btn-secondary btn-xs"
+                            onClick={(e) => { e.stopPropagation(); removeMigratedCard(card.id); }}
+                          >
+                            Move to Unmigrated
+                          </button>
                         </div>
-                        <div className="card-status">
-                          {"-> "}{migratedInfo?.newId}
-                        </div>
-                        <button
-                          className="btn btn-secondary btn-xs"
-                          onClick={(e) => { e.stopPropagation(); removeMigratedCard(card.id); }}
-                        >
-                          Move to Unmigrated
-                        </button>
                       </div>
-                    </div>
-                  );
-                })
-              )}
+                    );
+                  })
+                )}
+              </div>
             </div>
 
-            <div className="card-section" style={{ marginTop: '1.5rem' }}>
+            <div className="card-section">
               <h3 className="section-header">On Hold Cards ({onHoldCards.length})</h3>
-              {onHoldCards.length === 0 ? (
-                <div className="empty-state">No cards on hold</div>
-              ) : (
-                onHoldCards.slice(0, visibleCounts.onHold).map(card => {
-                  const index = cards.findIndex(c => c.id === card.id);
-                  return (
-                    <div
-                      key={card.id}
-                      className={`card-item ${index === currentCardIndex ? 'selected' : ''} on-hold`}
-                      onClick={() => selectCard(index)}
-                    >
-                      <div className="card-item-content">
-                        <div className="card-name">
-                          #{card.id} {card.name}
+              <div className="section-list" ref={onHoldRef}>
+                {onHoldCards.length === 0 ? (
+                  <div className="empty-state">No cards on hold</div>
+                ) : (
+                  onHoldCards.slice(0, visibleCounts.onHold).map(card => {
+                    const index = cards.findIndex(c => c.id === card.id);
+                    return (
+                      <div
+                        key={card.id}
+                        className={`card-item ${index === currentCardIndex ? 'selected' : ''} on-hold`}
+                        onClick={() => selectCard(index)}
+                      >
+                        <div className="card-item-content">
+                          <div className="card-name">
+                            #{card.id} {card.name}
+                          </div>
+                          <button
+                            className="btn btn-secondary btn-xs"
+                            onClick={(e) => { e.stopPropagation(); removeFromOnHold(card.id); }}
+                          >
+                            Move to Unmigrated
+                          </button>
                         </div>
-                        <button
-                          className="btn btn-secondary btn-xs"
-                          onClick={(e) => { e.stopPropagation(); removeFromOnHold(card.id); }}
-                        >
-                          Move to Unmigrated
-                        </button>
                       </div>
-                    </div>
-                  );
-                })
-              )}
+                    );
+                  })
+                )}
+              </div>
             </div>
 
             {cards.length === 0 && !error && (
