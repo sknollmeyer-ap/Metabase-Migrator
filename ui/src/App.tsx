@@ -215,32 +215,68 @@ function App() {
           </div>
 
           <div className="card-list-scroll">
-            {cards.map((card, index) => {
-              const migrated = isCardMigrated(card.id);
-              const migratedInfo = getMigratedInfo(card.id);
+            {/* Unmigrated Cards Section */}
+            {(() => {
+              const unmigrated = cards.filter(card => !isCardMigrated(card.id)).slice(0, 10);
+              const migrated = cards.filter(card => isCardMigrated(card.id));
 
               return (
-                <div
-                  key={card.id}
-                  className={`card-item ${index === currentCardIndex ? 'selected' : ''} ${migrated ? 'migrated' : ''}`}
-                  onClick={() => selectCard(index)}
-                >
-                  <div className="card-item-content">
-                    <div className="card-name">
-                      #{card.id} {card.name}
+                <>
+                  {unmigrated.length > 0 && (
+                    <div className="card-section">
+                      <h3 className="section-header">Unmigrated Cards ({unmigrated.length})</h3>
+                      {unmigrated.map(card => {
+                        const index = cards.findIndex(c => c.id === card.id);
+                        return (
+                          <div
+                            key={card.id}
+                            className={`card-item ${index === currentCardIndex ? 'selected' : ''}`}
+                            onClick={() => selectCard(index)}
+                          >
+                            <div className="card-item-content">
+                              <div className="card-name">
+                                #{card.id} {card.name}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                    {migrated && (
-                      <div className="card-status">
-                        ✓ #{migratedInfo?.newId}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                  )}
+
+                  {/* Migrated Cards Section */}
+                  {migrated.length > 0 && (
+                    <div className="card-section" style={{ marginTop: '1.5rem' }}>
+                      <h3 className="section-header">Migrated Cards ({migrated.length})</h3>
+                      {migrated.map(card => {
+                        const index = cards.findIndex(c => c.id === card.id);
+                        const migratedInfo = getMigratedInfo(card.id);
+                        return (
+                          <div
+                            key={card.id}
+                            className={`card-item ${index === currentCardIndex ? 'selected' : ''} migrated`}
+                            onClick={() => selectCard(index)}
+                          >
+                            <div className="card-item-content">
+                              <div className="card-name">
+                                #{card.id} {card.name}
+                              </div>
+                              <div className="card-status">
+                                ✓ #{migratedInfo?.newId}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {cards.length === 0 && !error && (
+                    <div className="empty-state">No cards found</div>
+                  )}
+                </>
               );
-            })}
-            {cards.length === 0 && !error && (
-              <div className="empty-state">No cards found</div>
-            )}
+            })()}
           </div>
         </div>
 

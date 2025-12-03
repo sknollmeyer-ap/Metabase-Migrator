@@ -167,6 +167,20 @@ body {
   border-left: 4px solid var(--success);
 }
 
+.card-section {
+  margin-bottom: 0.5rem;
+}
+
+.section-header {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .card-status {
   font-size: 0.85rem;
   color: var(--success);
