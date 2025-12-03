@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+﻿import { useState, useEffect, useRef } from 'react'
 import './App.css'
 import { UnmatchedMapping } from './components/UnmatchedMapping';
 import type { MigrationResponse } from './types';
@@ -27,9 +27,12 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [returnToCardId, setReturnToCardId] = useState<number | null>(null);
+  const [onHoldIds, setOnHoldIds] = useState<number[]>([]);
+  const [visibleCounts, setVisibleCounts] = useState({ onHold: 10, unmigrated: 10, migrated: 10 });
   const defaultDbId = 6;
   const targetDbId = 10;
   const REQUEST_TIMEOUT_MS = 120000; // avoid hanging UI if API never returns
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const fetchWithTimeout = async (input: RequestInfo | URL, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS) => {
     const controller = new AbortController();
@@ -45,6 +48,7 @@ function App() {
   useEffect(() => {
     fetchCards();
     loadMigratedCards();
+    loadOnHold();
   }, []);
 
   // Auto-refresh preview when returning to a card if it was the parent
@@ -117,6 +121,35 @@ function App() {
     localStorage.setItem('migratedCards', JSON.stringify(updated));
   };
 
+  const loadOnHold = () => {
+    try {
+      const stored = localStorage.getItem('onHoldCards');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          setOnHoldIds(parsed);
+        }
+      }
+    } catch {
+      setOnHoldIds([]);
+    }
+  };
+
+  const saveOnHold = (ids: number[]) => {
+    setOnHoldIds(ids);
+    localStorage.setItem('onHoldCards', JSON.stringify(ids));
+  };
+
+  const addToOnHold = (cardId: number) => {
+    if (onHoldIds.includes(cardId)) return;
+    saveOnHold([...onHoldIds, cardId]);
+  };
+
+  const removeFromOnHold = (cardId: number) => {
+    if (!onHoldIds.includes(cardId)) return;
+    saveOnHold(onHoldIds.filter(id => id !== cardId));
+  };
+
   const fetchCards = async () => {
     try {
       const res = await fetch(`/api/cards?db=${defaultDbId}`);
@@ -136,8 +169,49 @@ function App() {
     return migratedCards.some(m => m.oldId === cardId);
   };
 
+  const isOnHold = (cardId: number) => onHoldIds.includes(cardId);
+
+  const migratedCardsList = cards.filter(card => isCardMigrated(card.id));
+  const onHoldCards = cards.filter(card => isOnHold(card.id));
+  const unmigratedCards = cards.filter(card => !isCardMigrated(card.id) && !isOnHold(card.id));
+
   const currentCard = currentCardIndex !== null ? cards[currentCardIndex] : null;
   const isMigrated = currentCard ? isCardMigrated(currentCard.id) : false;
+  const isCurrentOnHold = currentCard ? isOnHold(currentCard.id) : false;
+
+  // Adjust visible slices when list sizes change
+  useEffect(() => {
+    const clamp = (current: number, length: number) => {
+      if (length === 0) return 0;
+      const base = Math.min(10, length);
+      return Math.min(Math.max(base, current), length);
+    };
+
+    setVisibleCounts(prev => ({
+      onHold: clamp(prev.onHold, onHoldCards.length),
+      unmigrated: clamp(prev.unmigrated, unmigratedCards.length),
+      migrated: clamp(prev.migrated, migratedCardsList.length)
+    }));
+  }, [onHoldCards.length, unmigratedCards.length, migratedCardsList.length]);
+
+  // Infinite scroll for left pane sections
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+
+    const onScroll = () => {
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) {
+        setVisibleCounts(prev => ({
+          onHold: Math.min(onHoldCards.length, prev.onHold + 10),
+          unmigrated: Math.min(unmigratedCards.length, prev.unmigrated + 10),
+          migrated: Math.min(migratedCardsList.length, prev.migrated + 10)
+        }));
+      }
+    };
+
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [onHoldCards.length, unmigratedCards.length, migratedCardsList.length]);
 
   const previewCard = async () => {
     if (!currentCard) return;
@@ -213,7 +287,7 @@ function App() {
           timestamp: Date.now()
         };
         saveMigratedCard(migration);
-        setSuccess(`✓ Card ${currentCard.id} migrated successfully as Card ${data.newId}`);
+        setSuccess(`âœ“ Card ${currentCard.id} migrated successfully as Card ${data.newId}`);
 
         // Update preview to show success state
         setPreview(data);
@@ -268,8 +342,8 @@ function App() {
     <div className="app-container">
       {/* Header */}
       <div className="app-header">
-        <h1>⚡ MetaMigrator Workbench</h1>
-        <p>PostgreSQL → ClickHouse Migration Tool</p>
+        <h1>âš¡ MetaMigrator Workbench</h1>
+        <p>PostgreSQL â†’ ClickHouse Migration Tool</p>
       </div>
 
       {/* Main Layout */}
@@ -278,75 +352,98 @@ function App() {
         {/* Left Pane: Card List */}
         <div className="glass-card card-list-pane">
           <div className="pane-header">
-            <h2>📋 Cards ({cards.length})</h2>
+            <h2>ðŸ“‹ Cards ({cards.length})</h2>
             <div className="progress-mini">
               <div className="progress-bar" style={{ width: `${progressPercent}%` }}></div>
             </div>
           </div>
 
-          <div className="card-list-scroll">
-            {/* Unmigrated Cards Section */}
-            {(() => {
-              const unmigrated = cards.filter(card => !isCardMigrated(card.id)).slice(0, 10);
-              const migrated = cards.filter(card => isCardMigrated(card.id));
-
-              return (
-                <>
-                  {unmigrated.length > 0 && (
-                    <div className="card-section">
-                      <h3 className="section-header">Unmigrated Cards ({unmigrated.length})</h3>
-                      {unmigrated.map(card => {
-                        const index = cards.findIndex(c => c.id === card.id);
-                        return (
-                          <div
-                            key={card.id}
-                            className={`card-item ${index === currentCardIndex ? 'selected' : ''}`}
-                            onClick={() => selectCard(index)}
-                          >
-                            <div className="card-item-content">
-                              <div className="card-name">
-                                #{card.id} {card.name}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
+          <div className="card-list-scroll" ref={listRef}>
+            {onHoldCards.length > 0 && (
+              <div className="card-section">
+                <h3 className="section-header">On Hold ({onHoldCards.length})</h3>
+                {onHoldCards.slice(0, visibleCounts.onHold).map(card => {
+                  const index = cards.findIndex(c => c.id === card.id);
+                  return (
+                    <div
+                      key={card.id}
+                      className={`card-item ${index === currentCardIndex ? 'selected' : ''} on-hold`}
+                      onClick={() => selectCard(index)}
+                    >
+                      <div className="card-item-content">
+                        <div className="card-name">
+                          #{card.id} {card.name}
+                        </div>
+                        <button
+                          className="btn btn-secondary btn-xs"
+                          onClick={(e) => { e.stopPropagation(); removeFromOnHold(card.id); }}
+                        >
+                          Return to list
+                        </button>
+                      </div>
                     </div>
-                  )}
+                  );
+                })}
+              </div>
+            )}
 
-                  {/* Migrated Cards Section */}
-                  {migrated.length > 0 && (
-                    <div className="card-section" style={{ marginTop: '1.5rem' }}>
-                      <h3 className="section-header">Migrated Cards ({migrated.length})</h3>
-                      {migrated.map(card => {
-                        const index = cards.findIndex(c => c.id === card.id);
-                        const migratedInfo = getMigratedInfo(card.id);
-                        return (
-                          <div
-                            key={card.id}
-                            className={`card-item ${index === currentCardIndex ? 'selected' : ''} migrated`}
-                            onClick={() => selectCard(index)}
-                          >
-                            <div className="card-item-content">
-                              <div className="card-name">
-                                #{card.id} {card.name}
-                              </div>
-                              <div className="card-status">
-                                ✓ #{migratedInfo?.newId}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
+            {unmigratedCards.length > 0 && (
+              <div className="card-section">
+                <h3 className="section-header">Unmigrated Cards ({unmigratedCards.length})</h3>
+                {unmigratedCards.slice(0, visibleCounts.unmigrated).map(card => {
+                  const index = cards.findIndex(c => c.id === card.id);
+                  return (
+                    <div
+                      key={card.id}
+                      className={`card-item ${index === currentCardIndex ? 'selected' : ''}`}
+                      onClick={() => selectCard(index)}
+                    >
+                      <div className="card-item-content">
+                        <div className="card-name">
+                          #{card.id} {card.name}
+                        </div>
+                        <button
+                          className="btn btn-secondary btn-xs"
+                          onClick={(e) => { e.stopPropagation(); addToOnHold(card.id); }}
+                        >
+                          Put on hold
+                        </button>
+                      </div>
                     </div>
-                  )}
+                  );
+                })}
+              </div>
+            )}
 
-                  {cards.length === 0 && !error && (
-                    <div className="empty-state">No cards found</div>
-                  )}
-                </>
-              );
-            })()}
+            {migratedCardsList.length > 0 && (
+              <div className="card-section" style={{ marginTop: '1.5rem' }}>
+                <h3 className="section-header">Migrated Cards ({migratedCardsList.length})</h3>
+                {migratedCardsList.slice(0, visibleCounts.migrated).map(card => {
+                  const index = cards.findIndex(c => c.id === card.id);
+                  const migratedInfo = getMigratedInfo(card.id);
+                  return (
+                    <div
+                      key={card.id}
+                      className={`card-item ${index === currentCardIndex ? 'selected' : ''} migrated`}
+                      onClick={() => selectCard(index)}
+                    >
+                      <div className="card-item-content">
+                        <div className="card-name">
+                          #{card.id} {card.name}
+                        </div>
+                        <div className="card-status">
+                          {"-> "} {migratedInfo?.newId}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {cards.length === 0 && !error && (
+              <div className="empty-state">No cards found</div>
+            )}
           </div>
         </div>
 
@@ -356,18 +453,23 @@ function App() {
             <div className="detail-content">
               <div className="detail-header">
                 <div>
-                  <h2>🎯 Card #{currentCard.id}</h2>
+                  <h2>ðŸŽ¯ Card #{currentCard.id}</h2>
                   <p className="subtitle">{currentCard.name}</p>
                   {returnToCardId && returnToCardId !== currentCard.id && (
                     <div style={{ fontSize: '0.85rem', color: 'var(--primary-light)', marginTop: '0.5rem' }}>
-                      ↩ You are resolving a dependency for Card #{returnToCardId}
+                      â†© You are resolving a dependency for Card #{returnToCardId}
+                    </div>
+                  )}
+                  {isCurrentOnHold && (
+                    <div style={{ fontSize: "0.85rem", color: "var(--warning)", marginTop: "0.4rem" }}>
+                      On hold for manual review
                     </div>
                   )}
                 </div>
                 <div className="actions">
                   {preview && (
                     <button onClick={previewCard} className="btn btn-secondary btn-sm" disabled={loading}>
-                      🔄 Refresh Preview
+                      ðŸ”„ Refresh Preview
                     </button>
                   )}
                 </div>
@@ -377,7 +479,7 @@ function App() {
               {!preview && !isMigrated && !loading && (
                 <div className="empty-state">
                   <button onClick={previewCard} className="btn btn-primary btn-lg">
-                    🔍 Check Card & Preview Migration
+                    ðŸ” Check Card & Preview Migration
                   </button>
                 </div>
               )}
@@ -392,7 +494,7 @@ function App() {
                   {preview.status === 'failed' && (
                     <div className="alert alert-error" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%' }}>
-                        <strong>❌ Migration Check Failed</strong>
+                        <strong>âŒ Migration Check Failed</strong>
                         {preview.errorCode && <div className="error-code">{preview.errorCode}</div>}
                       </div>
                       <p style={{ marginTop: '0.5rem' }}>{preview.message}</p>
@@ -423,7 +525,7 @@ function App() {
                                     }
                                   }}
                                 >
-                                  👉 Go to Dependency Card #{depId}
+                                  ðŸ‘‰ Go to Dependency Card #{depId}
                                 </button>
                               </div>
                             );
@@ -451,13 +553,13 @@ function App() {
                   {/* Queries Comparison */}
                   <div className="query-comparison">
                     <div className="query-box">
-                      <h3>📄 Original (Postgres)</h3>
+                      <h3>ðŸ“„ Original (Postgres)</h3>
                       <div className="code-block">
                         <pre>{JSON.stringify(preview.originalQuery || {}, null, 2)}</pre>
                       </div>
                     </div>
                     <div className="query-box">
-                      <h3>✨ Migrated (ClickHouse)</h3>
+                      <h3>âœ¨ Migrated (ClickHouse)</h3>
                       <div className="code-block">
                         <pre>{preview.migratedQuery ? JSON.stringify(preview.migratedQuery, null, 2) : 'No migration generated'}</pre>
                       </div>
@@ -467,7 +569,7 @@ function App() {
                   {/* Warnings */}
                   {preview.warnings && preview.warnings.length > 0 && (
                     <div className="alert alert-warning" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-                      <strong>⚠️ Warnings:</strong>
+                      <strong>âš ï¸ Warnings:</strong>
                       <ul>{preview.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
 
                       {/* Check for nested card warnings and add navigation */}
@@ -493,7 +595,7 @@ function App() {
                                     }
                                   }}
                                 >
-                                  👉 Go to Dependency Card #{depId}
+                                  ðŸ‘‰ Go to Dependency Card #{depId}
                                 </button>
                               </div>
                             );
@@ -506,23 +608,43 @@ function App() {
 
                   {/* Action Buttons */}
                   <div className="action-bar">
+                    {!isMigrated && (
+                      isCurrentOnHold ? (
+                        <button
+                          onClick={() => removeFromOnHold(currentCard.id)}
+                          className="btn btn-secondary"
+                          disabled={migrating}
+                        >
+                          Move back to Unmigrated
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => addToOnHold(currentCard.id)}
+                          className="btn btn-secondary"
+                          disabled={migrating}
+                        >
+                          Put on Hold
+                        </button>
+                      )
+                    )}
+
                     <button
                       onClick={() => migrateCard(false)}
                       disabled={migrating || preview.status === 'failed'}
                       className="btn btn-success btn-lg"
                     >
-                      {migrating ? 'Migrating...' : '✓ Migrate Card'}
+                      {migrating ? 'Migrating...' : 'âœ“ Migrate Card'}
                     </button>
 
                     {preview.status === 'already_migrated' && (
                       <button onClick={() => migrateCard(true)} className="btn btn-warning">
-                        🔄 Re-migrate (Overwrite)
+                        ðŸ”„ Re-migrate (Overwrite)
                       </button>
                     )}
 
                     {preview.cardUrl && (
                       <a href={preview.cardUrl} target="_blank" rel="noreferrer" className="btn btn-primary">
-                        🔗 View in Metabase
+                        ðŸ”— View in Metabase
                       </a>
                     )}
                   </div>
