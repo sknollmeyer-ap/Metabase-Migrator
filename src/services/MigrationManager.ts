@@ -154,31 +154,54 @@ export class MigrationManager {
                 unmatchedTables = result.unmatchedTables;
                 unmatchedFields = result.unmatchedFields;
             } else if (card.dataset_query.type === 'native') {
+                console.log(`  Processing native SQL query for card ${card.id}...`);
                 const sql = card.dataset_query.native?.query || '';
                 if (!sql) {
-                    return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: 'Native query is empty' };
-                }
-
-                const context = await this.buildSqlContext();
-                const translatedSql = await this.sqlMigrator.translateSql(sql, context);
-
-                if (translatedSql.toUpperCase().startsWith('ERROR:')) {
                     return {
                         status: 'failed',
-                        errorCode: MigrationErrorCode.SQL_TRANSLATION_ERROR,
-                        message: translatedSql,
+                        errorCode: MigrationErrorCode.UNKNOWN_ERROR,
+                        message: 'Native query is empty',
                         originalQuery: card.dataset_query
                     };
                 }
 
-                migratedQuery = {
-                    database: config.newDbId,
-                    type: 'native',
-                    native: {
-                        query: translatedSql,
-                        'template-tags': card.dataset_query.native?.['template-tags'] || {}
+                console.log(`  Original SQL length: ${sql.length} characters`);
+                const context = await this.buildSqlContext();
+
+                try {
+                    const translatedSql = await this.sqlMigrator.translateSql(sql, context);
+                    console.log(`  Translated SQL length: ${translatedSql.length} characters`);
+
+                    if (translatedSql.toUpperCase().startsWith('ERROR:')) {
+                        console.error(`  SQL translation failed: ${translatedSql}`);
+                        return {
+                            status: 'failed',
+                            errorCode: MigrationErrorCode.SQL_TRANSLATION_ERROR,
+                            message: `SQL Translation Error: ${translatedSql}`,
+                            originalQuery: card.dataset_query,
+                            details: { originalSql: sql, translationError: translatedSql }
+                        };
                     }
-                };
+
+                    console.log(`  ✓ SQL translation successful`);
+                    migratedQuery = {
+                        database: config.newDbId,
+                        type: 'native',
+                        native: {
+                            query: translatedSql,
+                            'template-tags': card.dataset_query.native?.['template-tags'] || {}
+                        }
+                    };
+                } catch (error: any) {
+                    console.error(`  SQL migration error:`, error);
+                    return {
+                        status: 'failed',
+                        errorCode: MigrationErrorCode.SQL_TRANSLATION_ERROR,
+                        message: `SQL migration failed: ${error.message}`,
+                        originalQuery: card.dataset_query,
+                        details: { originalSql: sql, error: error.message }
+                    };
+                }
             } else {
                 return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: `Unknown query type: ${card.dataset_query.type}` };
             }
