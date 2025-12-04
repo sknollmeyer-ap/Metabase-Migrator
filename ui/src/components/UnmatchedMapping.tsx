@@ -96,6 +96,8 @@ export const UnmatchedMapping: React.FC<Props> = ({ unmatchedTables, unmatchedFi
 const FieldMapper: React.FC<{ field: UnmatchedField, onMap: () => void }> = ({ field, onMap }) => {
     const [candidates, setCandidates] = useState<FieldMetadata[]>([]);
     const [loading, setLoading] = useState(false);
+    const [aiLoading, setAiLoading] = useState(false);
+    const [aiNote, setAiNote] = useState<string | null>(null);
 
     useEffect(() => {
         const loadCandidates = async () => {
@@ -128,6 +130,35 @@ const FieldMapper: React.FC<{ field: UnmatchedField, onMap: () => void }> = ({ f
         }
     };
 
+    const handleAISuggest = async () => {
+        setAiLoading(true);
+        setAiNote(null);
+        try {
+            const res = await fetch('/api/suggest-field-mapping', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ old_field_id: field.sourceFieldId })
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'AI suggestion failed');
+            }
+            const suggestion = await res.json();
+            if (suggestion?.new_field_id) {
+                const reason = suggestion.reason ? ` (${suggestion.reason})` : '';
+                setAiNote(`AI picked field ${suggestion.new_field_id}${reason}`);
+                await handleMap(suggestion.new_field_id);
+            } else {
+                setAiNote('No AI suggestion available.');
+            }
+        } catch (err: any) {
+            console.error('AI suggestion failed', err);
+            setAiNote('AI suggestion failed. See console for details.');
+        } finally {
+            setAiLoading(false);
+        }
+    };
+
     return (
         <div className="mapping-item">
             <div className="source-label">
@@ -139,7 +170,7 @@ const FieldMapper: React.FC<{ field: UnmatchedField, onMap: () => void }> = ({ f
                 <select
                     onChange={(e) => handleMap(parseInt(e.target.value))}
                     defaultValue=""
-                    disabled={loading}
+                    disabled={loading || aiLoading}
                 >
                     <option value="" disabled>{loading ? 'Loading...' : 'Select target field...'}</option>
                     {candidates.map(f => (
@@ -148,6 +179,19 @@ const FieldMapper: React.FC<{ field: UnmatchedField, onMap: () => void }> = ({ f
                         </option>
                     ))}
                 </select>
+                <button
+                    className="btn btn-secondary btn-sm"
+                    style={{ marginTop: '0.5rem' }}
+                    onClick={handleAISuggest}
+                    disabled={aiLoading || loading}
+                >
+                    {aiLoading ? 'Asking AI...' : 'AI Suggest'}
+                </button>
+                {aiNote && (
+                    <div style={{ marginTop: '0.35rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        {aiNote}
+                    </div>
+                )}
             </div>
         </div>
     );
