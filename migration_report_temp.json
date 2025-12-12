@@ -1,0 +1,78 @@
+{
+  "summary": {
+    "total": 1,
+    "migrated": 1,
+    "waiting": 5,
+    "alreadyMigrated": 0,
+    "dryRun": true
+  },
+  "cardMappings": {
+    "526": 4098,
+    "528": 4100,
+    "1708": 4103
+  },
+  "details": [
+    {
+      "status": "ok",
+      "originalQuery": {
+        "database": 6,
+        "type": "native",
+        "native": {
+          "query": "SELECT \r\n    inv.\"ALT_INVOICE_ID\" AS \"ALT_INVOICE_ID\",\r\n    inv.\"PARTNER_ID\" AS \"PARTNER_ID\", \r\n    inv.\"CUSTOMER_ID\" AS \"CUSTOMER_ID\", \r\n    inv.\"CREATED_BY_CUSTOMER\" AS \"CREATED_BY_CUSTOMER\", \r\n    inv.\"AMOUNT\" / 100 AS \"AMOUNT\", \r\n    inv.\"DUE_DATE\" AS \"DUE_DATE\", \r\n    inv.\"PRODUCT_NAME\" AS \"PRODUCT_NAME\", \r\n    inv.\"INVOICE_NUMBER\" AS \"INVOICE_NUMBER\", \r\n    inv.\"EXTERNAL_ID\" AS \"EXTERNAL_ID\", \r\n    inv.\"EXTERNAL_TYPE\" AS \"EXTERNAL_TYPE\", \r\n    inv.\"EXTERNAL_INVOICE_NUMBER\" AS \"EXTERNAL_INVOICE_NUMBER\",\r\n    inv.\"RECURRING_PAYMENT_ID\" AS \"RECURRING_PAYMENT_ID\",\r\n    inv.\"LAST_STATUS\" AS \"LAST_STATUS\",\r\n    inv.\"LAST_REMINDED_AT\" AS \"LAST_REMINDED_AT\",\r\n    inv.\"SVC_CREATED_AT\" AS \"SVC_CREATED_AT\",\r\n    inv.\"SVC_UPDATED_AT\" AS \"SVC_UPDATED_AT\",\r\n    part.\"NAME\" AS \"Partner__NAME\",\r\n    cust.\"NAME\" AS \"Customer__NAME\",\r\n    current_date AS \"Today\",\r\n    date_part('day', current_date - inv.\"DUE_DATE\") AS \"AR_AGING_TIME\"\r\nFROM \r\n    \"s_alt_gold_layer_data\".\"invoice_materialized\" inv\r\nLEFT JOIN \r\n    \"s_alt_gold_layer_data\".\"partners_materialized\" part ON part.\"ALT_PARTNER_ID\" = inv.\"PARTNER_ID\"\r\nLEFT JOIN \r\n    \"s_alt_gold_layer_data\".\"customers_materialized\" cust ON cust.\"ALT_CUSTOMER_ID\" = inv.\"CUSTOMER_ID\"\r\nWHERE \r\n    inv.\"LAST_STATUS\" = 'overdue'\r\nLIMIT 1048575\r\n",
+          "template-tags": {}
+        }
+      },
+      "migratedQuery": {
+        "database": 10,
+        "type": "native",
+        "native": {
+          "query": "SELECT \n    inv.ALT_INVOICE_ID AS ALT_INVOICE_ID,\n    inv.PARTNER_ID AS PARTNER_ID, \n    inv.CUSTOMER_ID AS CUSTOMER_ID, \n    inv.CREATED_BY_CUSTOMER AS CREATED_BY_CUSTOMER, \n    inv.AMOUNT / 100 AS AMOUNT, \n    inv.DUE_DATE AS DUE_DATE, \n    inv.PRODUCT_NAME AS PRODUCT_NAME, \n    inv.INVOICE_NUMBER AS INVOICE_NUMBER, \n    inv.EXTERNAL_ID AS EXTERNAL_ID, \n    inv.EXTERNAL_TYPE AS EXTERNAL_TYPE, \n    inv.EXTERNAL_INVOICE_NUMBER AS EXTERNAL_INVOICE_NUMBER,\n    inv.RECURRING_PAYMENT_ID AS RECURRING_PAYMENT_ID,\n    inv.LAST_STATUS AS LAST_STATUS,\n    inv.LAST_REMINDED_AT AS LAST_REMINDED_AT,\n    inv.SVC_CREATED_AT AS SVC_CREATED_AT,\n    inv.SVC_UPDATED_AT AS SVC_UPDATED_AT,\n    part.NAME AS Partner__NAME,\n    cust.NAME AS Customer__NAME,\n    toDate(today()) AS Today,\n    toInt64(dateDiff('day', inv.DUE_DATE, toDate(today()))) AS AR_AGING_TIME\nFROM \n    default.alt_invoice_invoices inv\nLEFT JOIN \n    default.alt_partner_partners part ON part.id = inv.PARTNER_ID\nLEFT JOIN \n    default.alt_customer_customers cust ON cust.id = inv.CUSTOMER_ID\nWHERE \n    inv.LAST_STATUS = 'overdue'\nLIMIT 1048575",
+          "template-tags": {}
+        }
+      },
+      "warnings": [],
+      "oldId": 1774,
+      "cardName": "AR Aging Invoice Table (RDS)",
+      "details": {
+        "dependencies": []
+      }
+    }
+  ],
+  "waiting": [
+    {
+      "cardId": 4094,
+      "cardName": "Test for API",
+      "reason": "Partial migration: Warning: Could not map field ID 28123",
+      "missingTables": [],
+      "timestamp": "2025-11-30T23:02:52.730Z"
+    },
+    {
+      "cardId": 1888,
+      "cardName": "Partner Name and ID",
+      "reason": "Request failed with status code 403",
+      "missingTables": [],
+      "timestamp": "2025-12-01T01:50:18.627Z"
+    },
+    {
+      "cardId": 2404,
+      "cardName": "Daily Chargeback Summary - Deduplicated",
+      "reason": "[GoogleGenerativeAI Error]: [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent: [404 Not Found] models/gemini-pro is not found for API version v1, or is not supported for generateContent. Call ListModels to see the list of available models and their supported methods.",
+      "missingTables": [],
+      "timestamp": "2025-12-01T01:50:19.092Z"
+    },
+    {
+      "cardId": 4094,
+      "cardName": "Test for API",
+      "reason": "Request failed with status code 403",
+      "missingTables": [],
+      "timestamp": "2025-12-01T01:50:19.203Z"
+    },
+    {
+      "cardId": 526,
+      "cardName": "Overdue Invoices (Last 90 Days)",
+      "reason": "Cannot read properties of null (reading 'source-field')",
+      "missingTables": [],
+      "timestamp": "2025-12-01T01:57:33.323Z"
+    }
+  ]
+}

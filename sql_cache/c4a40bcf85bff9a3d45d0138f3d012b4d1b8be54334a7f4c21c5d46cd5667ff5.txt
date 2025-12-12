@@ -1,0 +1,30 @@
+SELECT 
+    inv.ALT_INVOICE_ID AS ALT_INVOICE_ID,
+    inv.PARTNER_ID AS PARTNER_ID, 
+    inv.CUSTOMER_ID AS CUSTOMER_ID, 
+    inv.CREATED_BY_CUSTOMER AS CREATED_BY_CUSTOMER, 
+    inv.AMOUNT / 100 AS AMOUNT, 
+    inv.DUE_DATE AS DUE_DATE, 
+    inv.PRODUCT_NAME AS PRODUCT_NAME, 
+    inv.INVOICE_NUMBER AS INVOICE_NUMBER, 
+    inv.EXTERNAL_ID AS EXTERNAL_ID, 
+    inv.EXTERNAL_TYPE AS EXTERNAL_TYPE, 
+    inv.EXTERNAL_INVOICE_NUMBER AS EXTERNAL_INVOICE_NUMBER,
+    inv.RECURRING_PAYMENT_ID AS RECURRING_PAYMENT_ID,
+    inv.LAST_STATUS AS LAST_STATUS,
+    inv.LAST_REMINDED_AT AS LAST_REMINDED_AT,
+    inv.SVC_CREATED_AT AS SVC_CREATED_AT,
+    inv.SVC_UPDATED_AT AS SVC_UPDATED_AT,
+    part.NAME AS Partner__NAME,
+    cust.NAME AS Customer__NAME,
+    toDate(today()) AS Today,
+    toInt64(dateDiff('day', inv.DUE_DATE, toDate(today()))) AS AR_AGING_TIME
+FROM 
+    default.alt_invoice_invoices inv
+LEFT JOIN 
+    default.alt_partner_partners part ON part.id = inv.PARTNER_ID
+LEFT JOIN 
+    default.alt_customer_customers cust ON cust.id = inv.CUSTOMER_ID
+WHERE 
+    inv.LAST_STATUS = 'overdue'
+LIMIT 1048575

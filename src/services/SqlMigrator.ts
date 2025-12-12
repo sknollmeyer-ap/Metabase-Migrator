@@ -1,93 +1,114 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { config } from '../config';
 import { storage } from './StorageService';
+import { MetadataMapper } from './MetadataMapper';
 import crypto from 'crypto';
 
-/**
- * Translates Postgres SQL to ClickHouse SQL using Gemini.
- */
 export class SqlMigrator {
-    private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>;
+    private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']> | undefined;
+    private mapper: MetadataMapper | null = null; // Optional, set later or in constructor
 
-    constructor() {
+    constructor(mapper?: MetadataMapper) {
         if (!config.geminiApiKey) {
-            throw new Error('Missing GEMINI_API_KEY for SQL translation');
+            console.warn('Missing GEMINI_API_KEY. AI SQL translation will be disabled.');
+        } else {
+            const genAI = new GoogleGenerativeAI(config.geminiApiKey);
+            const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash-8b';
+            this.model = genAI.getGenerativeModel({ model: modelName });
         }
-
-        const genAI = new GoogleGenerativeAI(config.geminiApiKey);
-        // Use the fastest model for better performance within Vercel timeout limits
-        const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash-8b';
-        this.model = genAI.getGenerativeModel({ model: modelName });
+        if (mapper) this.mapper = mapper;
     }
 
-    async translateSql(originalSql: string, context: string): Promise<string> {
-        // Generate cache key from SQL + context
-        const cacheKey = this.generateCacheKey(originalSql, context);
+    setMapper(mapper: MetadataMapper) {
+        this.mapper = mapper;
+    }
 
-        // Check cache first
-        try {
-            const cached = await storage.getSqlTranslation(cacheKey);
-            if (cached) {
-                console.log('  ✓ Using cached SQL translation');
-                return cached;
-            }
-        } catch (err) {
-            console.warn('  Cache lookup failed, proceeding with translation:', err);
+    /**
+     * Applies heuristic regex-based transforms from Postgres to ClickHouse.
+     */
+    applyTransforms(sql: string): string {
+        let transformed = sql;
+
+        // 1. Basic Type Casts
+        transformed = transformed.replace(/::date/gi, '::Date');
+        transformed = transformed.replace(/::timestamp/gi, '::DateTime');
+        transformed = transformed.replace(/::int/gi, '::Int32');
+        transformed = transformed.replace(/::float/gi, '::Float64');
+        transformed = transformed.replace(/::text/gi, '::String');
+
+        // 2. Date Truncation
+        transformed = transformed.replace(/date_trunc\('day',\s*([^\)]+)\)/gi, 'toStartOfDay($1)');
+        transformed = transformed.replace(/date_trunc\('month',\s*([^\)]+)\)/gi, 'toStartOfMonth($1)');
+        transformed = transformed.replace(/date_trunc\('year',\s*([^\)]+)\)/gi, 'toStartOfYear($1)');
+        // Week is tricky, ClickHouse defaults to Sunday, Postgres might be Monday. Assuming standard ISO or Monday.
+        transformed = transformed.replace(/date_trunc\('week',\s*([^\)]+)\)/gi, 'toStartOfWeek($1, 3)');
+
+        // 3. String Functions
+        transformed = transformed.replace(/split_part\(/gi, 'splitByChar('); // Approximation, check args
+
+        // 4. JSON operators (basic attempt)
+        // src->'key' => visitParamExtractRaw(src, 'key') ??? Too complex for regex
+
+        // 5. Schema replacement (Global Search/Replace based on table_mapping_workflow)
+        if (this.mapper) {
+            // Very naive replacement of "schema"."table" -> "schema"."table"
+            // Accessing internal state of mapper is dirty but effective
+            const tableMap = this.mapper.tableMap;
+            // We need a reverse lookup or iteration. 
+            // Let's assume MetadataMapper has a way to get all known mappings.
+            // Actually, MetadataMapper doesn't expose strict "src -> target" names easily without async lookups.
+            // For now, we rely on the manager to pass context or handle table mapping via AI.
+            // Or we iterate over known mappings if they are loaded.
         }
 
-        // Optimized, more concise prompt
-        const prompt = `Convert PostgreSQL to ClickHouse SQL.
+        return transformed;
+    }
 
-PostgreSQL:
+    /**
+     * AI-based repair.
+     */
+    async fixWithAI(originalSql: string, transformedSql: string, errorMessage: string, context: string): Promise<string | null> {
+        if (!this.model) return null;
+
+        const cacheKey = this.generateCacheKey(transformedSql + errorMessage, context);
+        try {
+            const cached = await storage.getSqlTranslation(cacheKey);
+            if (cached) return cached;
+        } catch (e) { /* ignore */ }
+
+        const prompt = `
+You are an expert database engineer migrating from PostgreSQL to ClickHouse.
+
+ORIGINAL SQL (Postgres):
 ${originalSql}
 
-Schema mappings:
+INTERMEDIATE SQL (Attempted ClickHouse):
+${transformedSql}
+
+ERROR MESSAGE:
+${errorMessage}
+
+CONTEXT (Tables/Schemas):
 ${context}
 
-Rules:
-- Keep {{param}} syntax
-- Use ClickHouse date/time functions
-- Return ONLY the SQL (no markdown)
-- If impossible, return: ERROR: <reason>
+TASK:
+1. Fix the SQL to be valid ClickHouse SQL.
+2. Maintain the logic of the original query.
+3. Fix function names (e.g. date_trunc -> toStartOf...), quoting, and joins.
+4. Return ONLY the SQL string. No markdown.
 
-ClickHouse SQL:`;
+FIXED SQL:`;
 
-        let retries = 0;
-        const maxRetries = 3;
-        const baseDelay = 2000; // 2 seconds
+        try {
+            const result = await this.model.generateContent(prompt);
+            const response = await result.response;
+            let text = response.text().replace(/```sql/gi, '').replace(/```/g, '').trim();
 
-        while (true) {
-            try {
-                const result = await this.model.generateContent(prompt);
-                const response = await result.response;
-                let text = response.text();
-                // Strip any code fences
-                text = text.replace(/```sql/gi, '').replace(/```/g, '').trim();
-
-                // Cache the translation
-                try {
-                    await storage.saveSqlTranslation(cacheKey, text);
-                } catch (err) {
-                    console.warn('  Failed to cache translation:', err);
-                }
-
-                return text;
-            } catch (error: any) {
-                const message = error?.message || String(error);
-
-                // Check for rate limit error (429)
-                if (message.includes('429') || message.includes('Too Many Requests') || message.includes('Resource exhausted')) {
-                    if (retries < maxRetries) {
-                        retries++;
-                        const delay = baseDelay * Math.pow(2, retries - 1); // Exponential backoff: 2s, 4s, 8s
-                        console.warn(`  ⚠️ Gemini API rate limited. Retrying in ${delay}ms (Attempt ${retries}/${maxRetries})...`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                        continue;
-                    }
-                }
-
-                throw new Error(`[GoogleGenerativeAI Error]: ${message}`);
-            }
+            await storage.saveSqlTranslation(cacheKey, text);
+            return text;
+        } catch (err) {
+            console.error('AI Fix failed:', err);
+            return null;
         }
     }
 

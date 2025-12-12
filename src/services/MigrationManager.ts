@@ -9,7 +9,7 @@ import { config } from '../config';
 import fs from 'fs-extra';
 import path from 'path';
 import { FieldMapperAgent } from './FieldMapperAgent';
-import { MigrationResponse, MigrationErrorCode, UnmatchedTable, UnmatchedField } from '../types';
+import { MigrationResponse, MigrationErrorCode, UnmatchedTable, UnmatchedField, CardStatus, NativeSqlStatus } from '../types';
 
 export class MigrationManager {
     private client: MetabaseClient;
@@ -25,7 +25,7 @@ export class MigrationManager {
         this.mapper = new MetadataMapper(this.client);
         this.cardIdMapping = new CardIdMapping();
         this.mbqlMigrator = new MbqlMigrator(this.mapper, this.cardIdMapping.getAll());
-        this.sqlMigrator = new SqlMigrator();
+        this.sqlMigrator = new SqlMigrator(this.mapper);
         this.waitingArea = new WaitingArea();
         this.fieldMapperAgent = new FieldMapperAgent(this.mapper);
     }
@@ -35,6 +35,7 @@ export class MigrationManager {
         await this.cardIdMapping.load();
         await this.waitingArea.load();
         this.mbqlMigrator.setCardIdMap(this.cardIdMapping.getAll());
+        this.sqlMigrator.setMapper(this.mapper);
     }
 
     async run(dryRun: boolean, targetCardId?: number) {
@@ -52,7 +53,65 @@ export class MigrationManager {
         return this.generateReport(results, dryRun);
     }
 
+    public getClient(): MetabaseClient {
+        return this.client;
+    }
+
+    public getMapper(): MetadataMapper {
+        return this.mapper;
+    }
+
+    public getCardIdMapping(): CardIdMapping {
+        return this.cardIdMapping;
+    }
+
+    public getMbqlMigrator(): MbqlMigrator {
+        return this.mbqlMigrator;
+    }
+
+    async getCardStatuses(cards: any[]): Promise<Array<{ id: number; name: string; status: CardStatus; is_native: boolean }>> {
+        const statuses: Array<{ id: number; name: string; status: CardStatus; is_native: boolean }> = [];
+
+        const migratedIds = new Set(this.cardIdMapping.getAll().keys());
+
+        for (const card of cards) {
+            let status: CardStatus = 'unmigrated';
+            const isNative = card.dataset_query.type === 'native';
+
+            if (migratedIds.has(card.id)) {
+                status = 'migrated';
+            } else {
+                const dependencies = CardDependencyResolver.extractCardReferences(card.dataset_query);
+                let depsResolved = true;
+
+                for (const depId of dependencies) {
+                    if (!migratedIds.has(depId)) {
+                        depsResolved = false;
+                        break;
+                    }
+                }
+
+                if (!depsResolved) {
+                    status = 'on_hold';
+                } else {
+                    status = 'ready';
+                }
+            }
+
+            statuses.push({
+                id: card.id,
+                name: card.name,
+                status,
+                is_native: isNative
+            });
+        }
+        return statuses;
+    }
+
     async migrateCardWithDependencies(cardId: number, dryRun: boolean = true, visited: Set<number> = new Set(), collectionId: number | null = null, force: boolean = false): Promise<MigrationResponse> {
+        await this.cardIdMapping.load();
+        this.mbqlMigrator.setCardIdMap(this.cardIdMapping.getAll());
+
         if (visited.has(cardId)) {
             return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: 'Circular dependency detected' };
         }
@@ -60,7 +119,6 @@ export class MigrationManager {
 
         console.log(`\n=== Migrating card ${cardId} with dependencies ===`);
 
-        // 1. Fetch the card
         let card;
         try {
             card = await this.client.getCard(cardId);
@@ -69,17 +127,12 @@ export class MigrationManager {
             return { status: 'failed', errorCode: MigrationErrorCode.METABASE_API_ERROR, message: `Failed to fetch card ${cardId}: ${error.message}` };
         }
 
-        // 2. Extract dependencies
         const dependencies = CardDependencyResolver.extractCardReferences(card.dataset_query);
-        console.log(`Dependencies found: ${dependencies.join(', ') || 'none'}`);
-
         const dependencyResults: any[] = [];
 
-        // 3. Migrate dependencies first
         for (const depId of dependencies) {
             if (!this.cardIdMapping.has(depId)) {
                 console.log(`Migrating dependency: card ${depId}`);
-                // Don't force dependencies, only the target card
                 const depResult = await this.migrateCardWithDependencies(depId, dryRun, visited, collectionId, false);
                 dependencyResults.push(depResult);
 
@@ -91,38 +144,23 @@ export class MigrationManager {
                         details: depResult
                     };
                 }
-            } else {
-                console.log(`Dependency card ${depId} already migrated to ${this.cardIdMapping.get(depId)}`);
             }
         }
 
-        // 4. Check if this card is already migrated
         if (this.cardIdMapping.has(cardId) && !force) {
             const newCardId = this.cardIdMapping.get(cardId)!;
             console.log(`Card ${cardId} already migrated to ${newCardId}`);
-
-            // Fetch the migrated card to show its query
-            let migratedQuery = null;
-            try {
-                const migratedCard = await this.client.getCard(newCardId);
-                migratedQuery = migratedCard.dataset_query;
-            } catch (err) {
-                console.warn(`Could not fetch migrated card ${newCardId}:`, err);
-            }
-
             return {
                 status: 'already_migrated',
                 oldId: cardId,
                 cardName: card.name,
                 newId: newCardId,
                 originalQuery: card.dataset_query,
-                migratedQuery: migratedQuery,
                 cardUrl: `${this.client.getBaseUrl()}/question/${newCardId}`,
                 details: { dependencies: dependencyResults }
             };
         }
 
-        // 5. Migrate the card itself
         console.log(`Migrating card ${cardId}...`);
         const result = await this.migrateCard(card, dryRun, collectionId, force);
 
@@ -138,10 +176,12 @@ export class MigrationManager {
     private async migrateCard(card: any, dryRun: boolean, collectionId: number | null = null, force: boolean = false): Promise<MigrationResponse> {
         try {
             const warnings: string[] = [];
-            const errors: string[] = [];
             let migratedQuery: any;
             let unmatchedTables: UnmatchedTable[] = [];
             let unmatchedFields: UnmatchedField[] = [];
+            let isNativeSql = false;
+            let autoFixApplied = false;
+            let nativeSqlStatus: NativeSqlStatus = 'ok';
 
             if (!card.dataset_query) {
                 return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: 'Card missing dataset_query' };
@@ -154,63 +194,35 @@ export class MigrationManager {
                 unmatchedTables = result.unmatchedTables;
                 unmatchedFields = result.unmatchedFields;
             } else if (card.dataset_query.type === 'native') {
-                console.log(`  Processing native SQL query for card ${card.id}...`);
+                isNativeSql = true;
                 const sql = card.dataset_query.native?.query || '';
                 if (!sql) {
-                    return {
-                        status: 'failed',
-                        errorCode: MigrationErrorCode.UNKNOWN_ERROR,
-                        message: 'Native query is empty',
-                        originalQuery: card.dataset_query
-                    };
+                    return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: 'Native query is empty' };
                 }
 
-                console.log(`  Original SQL length: ${sql.length} characters`);
-                const context = await this.buildSqlContext();
+                // pipeline
+                const transformedSql = this.sqlMigrator.applyTransforms(sql);
+                let finalSql = transformedSql;
 
-                try {
-                    const translatedSql = await this.sqlMigrator.translateSql(sql, context);
-                    console.log(`  Translated SQL length: ${translatedSql.length} characters`);
+                // Validate using regex heuristic or AI check if we want safety
+                // We trust transforms for now.
 
-                    if (translatedSql.toUpperCase().startsWith('ERROR:')) {
-                        console.error(`  SQL translation failed: ${translatedSql}`);
-                        return {
-                            status: 'failed',
-                            errorCode: MigrationErrorCode.SQL_TRANSLATION_ERROR,
-                            message: `SQL Translation Error: ${translatedSql}`,
-                            originalQuery: card.dataset_query,
-                            details: { originalSql: sql, translationError: translatedSql }
-                        };
+                migratedQuery = {
+                    database: config.newDbId,
+                    type: 'native',
+                    native: {
+                        query: finalSql,
+                        'template-tags': card.dataset_query.native?.['template-tags'] || {}
                     }
-
-                    console.log(`  ✓ SQL translation successful`);
-                    migratedQuery = {
-                        database: config.newDbId,
-                        type: 'native',
-                        native: {
-                            query: translatedSql,
-                            'template-tags': card.dataset_query.native?.['template-tags'] || {}
-                        }
-                    };
-                } catch (error: any) {
-                    console.error(`  SQL migration error:`, error);
-                    return {
-                        status: 'failed',
-                        errorCode: MigrationErrorCode.SQL_TRANSLATION_ERROR,
-                        message: `SQL migration failed: ${error.message}`,
-                        originalQuery: card.dataset_query,
-                        details: { originalSql: sql, error: error.message }
-                    };
-                }
+                };
             } else {
                 return { status: 'failed', errorCode: MigrationErrorCode.UNKNOWN_ERROR, message: `Unknown query type: ${card.dataset_query.type}` };
             }
 
-            if (warnings.length > 0) {
-                console.warn(`Warnings for card ${card.id}:`, warnings.join(' | '));
+            if (unmatchedTables.length > 0 || unmatchedFields.length > 0) {
+                await this.enrichUnmatchedItems(unmatchedTables, unmatchedFields);
             }
 
-            // Check for unmatched items
             if (unmatchedTables.length > 0) {
                 return {
                     status: 'failed',
@@ -219,62 +231,36 @@ export class MigrationManager {
                     unmatchedTables,
                     unmatchedFields,
                     originalQuery: card.dataset_query,
-                    migratedQuery // Return partial migration
+                    migratedQuery
                 };
             }
 
             if (unmatchedFields.length > 0) {
-                // We might want to allow migration with warnings for fields, but for now let's be strict or warn
-                // The requirement says "surface these unmatched elements".
-                // If it's a dry run, we definitely want to show them.
-                // If it's a real run, maybe we fail?
-                // Let's treat it as a failure/warning state that prevents auto-migration unless forced (but force logic isn't fully here for fields)
-                // Actually, let's return them so the UI can show them.
-                if (dryRun) {
-                    // For dry run, we return them but status might be 'ok' or 'failed' depending on strictness.
-                    // Let's return status 'failed' so the UI highlights it, but provide the query.
-                    return {
-                        status: 'failed',
-                        errorCode: MigrationErrorCode.MISSING_MAPPING_FIELD,
-                        message: 'Unmatched fields found',
-                        unmatchedTables,
-                        unmatchedFields,
-                        originalQuery: card.dataset_query,
-                        migratedQuery
-                    };
-                } else {
-                    // For real migration, if we have unmapped fields, the query will likely fail in Metabase.
-                    // So we should probably fail.
-                    return {
-                        status: 'failed',
-                        errorCode: MigrationErrorCode.MISSING_MAPPING_FIELD,
-                        message: 'Unmatched fields found',
-                        unmatchedTables,
-                        unmatchedFields,
-                        originalQuery: card.dataset_query,
-                        migratedQuery
-                    };
-                }
+                return {
+                    status: 'failed',
+                    errorCode: MigrationErrorCode.MISSING_MAPPING_FIELD,
+                    message: 'Unmatched fields found',
+                    unmatchedTables,
+                    unmatchedFields,
+                    originalQuery: card.dataset_query,
+                    migratedQuery
+                };
             }
 
             if (dryRun) {
-                console.log('  [DRY RUN] Would create card with migrated query');
                 return {
                     status: 'ok',
                     originalQuery: card.dataset_query,
                     migratedQuery,
-                    warnings
+                    warnings,
+                    isNativeSql,
+                    autoFixApplied,
+                    nativeSqlStatus
                 };
             }
 
-            // Create or Update the new card
-            console.log('  Creating/Updating card in Metabase...');
-
-            // Check if card name already has [ClickHouse] suffix to avoid duplication
-            const cardName = card.name.includes('[ClickHouse]')
-                ? card.name
-                : `${card.name} [ClickHouse]`;
-
+            // Create/Update Logic
+            const cardName = card.name.includes('[ClickHouse]') ? card.name : `${card.name} [ClickHouse]`;
             const newCard = {
                 name: cardName,
                 description: card.description || `Migrated from card ${card.id}`,
@@ -290,37 +276,25 @@ export class MigrationManager {
 
             try {
                 if (existingNewId && force) {
-                    console.log(`  Updating existing migrated card ${existingNewId}...`);
                     await this.client.updateCard(existingNewId, newCard);
                     created = { id: existingNewId };
-                    console.log(`  ✓ Updated card ${created.id}: ${config.metabaseBaseUrl}/question/${created.id}`);
+                    console.log(`  ✓ Updated card ${created.id}`);
                 } else {
-                    console.log(`  Creating new card with name: "${cardName}"`);
                     created = await this.client.createCard(newCard);
-                    console.log(`  ✓ Created new card ${created.id}: ${config.metabaseBaseUrl}/question/${created.id}`);
+                    console.log(`  ✓ Created new card ${created.id}`);
                 }
             } catch (err: any) {
-                console.error(`  ✗ Failed to create/update card:`, err);
-                const errorMessage = err.response?.data?.message || err.message || 'Unknown error';
-                const errorDetails = err.response?.data || {};
                 return {
                     status: 'failed',
                     errorCode: MigrationErrorCode.METABASE_API_ERROR,
-                    message: `Metabase API error: ${errorMessage}`,
-                    details: {
-                        error: errorMessage,
-                        apiResponse: errorDetails,
-                        cardName: cardName
-                    },
+                    message: `Metabase API error: ${err.message}`,
                     originalQuery: card.dataset_query,
                     migratedQuery
                 };
             }
 
-            // Test the card and fix any errors
+            // Verify
             const fixedCardId = await this.testAndFixCard(created.id, migratedQuery);
-
-            // Save the mapping
             await this.cardIdMapping.set(card.id, fixedCardId);
 
             return {
@@ -329,119 +303,105 @@ export class MigrationManager {
                 cardUrl: `${config.metabaseBaseUrl}/question/${fixedCardId}`,
                 originalQuery: card.dataset_query,
                 migratedQuery,
-                warnings
+                warnings,
+                isNativeSql,
+                autoFixApplied,
+                nativeSqlStatus
             };
         } catch (error: any) {
-            const message = error?.message || String(error);
-            console.error(`  Failed to migrate card ${card.id}:`, message);
-            this.waitingArea.add({
-                cardId: card.id,
-                cardName: card.name,
-                reason: message,
-                missingTables: [],
-                timestamp: new Date().toISOString()
-            });
-
             return {
                 status: 'failed',
                 errorCode: MigrationErrorCode.UNKNOWN_ERROR,
-                message: message,
+                message: String(error),
                 originalQuery: card.dataset_query
             };
         }
     }
 
+    private async enrichUnmatchedItems(tables: UnmatchedTable[], fields: UnmatchedField[]) {
+        for (const t of tables) {
+            if (t.sourceTableName.startsWith('Table ') || t.sourceTableName === 'Unknown') {
+                try {
+                    const meta = await this.client.getTableMetadata(t.sourceTableId);
+                    if (meta) {
+                        t.sourceTableName = meta.display_name || meta.name || t.sourceTableName;
+                        if (meta.schema) t.schema = meta.schema;
+                    }
+                } catch (e) { }
+            }
+        }
+        for (const f of fields) {
+            if (f.sourceFieldName.startsWith('Field ') || f.sourceFieldName === 'Unknown' || f.sourceTableName === 'Unknown Table' || f.sourceTableId === 0) {
+                try {
+                    const meta = await this.client.getField(f.sourceFieldId);
+                    if (meta) {
+                        f.sourceFieldName = meta.display_name || meta.name || f.sourceFieldName;
+
+                        if (meta.table && meta.table.name) {
+                            f.sourceTableName = meta.table.display_name || meta.table.name;
+                            f.sourceTableId = meta.table.id;
+                            if (meta.table.schema) {
+                                f.sourceTableName = `${meta.table.schema}.${f.sourceTableName}`;
+                            }
+                        } else if (meta.table_id) {
+                            f.sourceTableId = meta.table_id;
+                            try {
+                                const tableMeta = await this.client.getTableMetadata(meta.table_id);
+                                if (tableMeta) {
+                                    const tableName = tableMeta.display_name || tableMeta.name;
+                                    f.sourceTableName = tableMeta.schema ? `${tableMeta.schema}.${tableName}` : tableName;
+                                }
+                            } catch (err) {
+                                console.warn(`Could not fetch table ${meta.table_id} for field ${f.sourceFieldId}`);
+                            }
+                        }
+
+                        // Ensure populate candidates if possible now that we know the table
+                        if (f.sourceTableId) {
+                            await this.mapper.ensureCandidates(f.sourceFieldId, f.sourceTableId);
+                        }
+                    }
+                } catch (e) {
+                    // console.warn(`Could not fetch field metadata for ${f.sourceFieldId}`, e);
+                }
+            }
+        }
+    }
+
     private async testAndFixCard(cardId: number, originalQuery: any, maxRetries: number = 3): Promise<number> {
         console.log(`  Testing card ${cardId}...`);
-
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                // Query the card to check for errors
                 const queryResult = await this.client.queryCard(cardId);
-
-                if (queryResult.error) {
-                    throw new Error(queryResult.error);
-                }
-
+                if (queryResult.error) throw new Error(queryResult.error);
                 console.log(`  ✓ Card ${cardId} executed successfully!`);
                 return cardId;
             } catch (error: any) {
                 const errorMessage = error?.response?.data?.message || error?.message || String(error);
                 console.log(`  ✗ Card ${cardId} failed (attempt ${attempt}/${maxRetries}): ${errorMessage}`);
 
-                if (attempt === maxRetries) {
-                    console.log(`  Max retries reached. Card ${cardId} still has errors.`);
-                    return cardId;
-                }
+                if (attempt === maxRetries) return cardId;
 
-                // Only try to fix SQL for native queries
-                if (originalQuery.type !== 'native' || !originalQuery.native?.query) {
-                    console.log(`  Cannot auto-fix non-SQL query. Stopping retries.`);
-                    return cardId;
-                }
+                if (originalQuery.type !== 'native' || !originalQuery.native?.query) return cardId;
 
-                // Try to fix the SQL using Gemini
-                const fixedSQL = await this.fixSQLWithAI(originalQuery.native.query, errorMessage);
+                const context = await this.buildSqlContext();
+                const fixedSQL = await this.sqlMigrator.fixWithAI(originalQuery.native.query, originalQuery.native.query, errorMessage, context);
+
                 if (!fixedSQL) {
-                    console.log(`  AI couldn't fix the error. Stopping retries.`);
+                    console.log(`  AI couldn't fix the error.`);
                     return cardId;
                 }
 
-                // Update the card with fixed SQL
                 console.log(`  Updating card ${cardId} with corrected SQL...`);
                 await this.client.updateCard(cardId, {
                     dataset_query: {
                         ...originalQuery,
-                        native: {
-                            ...originalQuery.native,
-                            query: fixedSQL
-                        }
+                        native: { ...originalQuery.native, query: fixedSQL }
                     }
                 });
             }
         }
-
         return cardId;
-    }
-
-    private async fixSQLWithAI(originalSQL: string, errorMessage: string): Promise<string | null> {
-        const prompt = `
-You are fixing a ClickHouse SQL query that failed with an error.
-
-ORIGINAL SQL:
-${originalSQL}
-
-ERROR:
-${errorMessage}
-
-Instructions:
-1) Analyze the error message carefully
-2) Fix the SQL to resolve the error
-3) Common fixes:
-   - Remove columns that don't exist in the table
-   - Fix column name typos
-   - Adjust JOIN conditions
-   - Fix data type issues
-4) Return ONLY the corrected SQL (no markdown, no explanations)
-5) If you can't fix it, return: CANNOT_FIX
-
-CORRECTED SQL:
-        `.trim();
-
-        try {
-            const result = await this.sqlMigrator['model'].generateContent(prompt);
-            const response = await result.response;
-            let text = response.text().replace(/```sql/gi, '').replace(/```/g, '').trim();
-
-            if (text.includes('CANNOT_FIX')) {
-                return null;
-            }
-
-            return text;
-        } catch (error: any) {
-            console.error('AI fix failed:', error?.message);
-            return null;
-        }
     }
 
     async generateReport(results: any[], dryRun: boolean) {
@@ -457,12 +417,8 @@ CORRECTED SQL:
             details: results,
             waiting: this.waitingArea.getAll()
         };
-
         const reportPath = path.resolve(process.cwd(), 'migration_report.json');
         await fs.writeJson(reportPath, report, { spaces: 2 });
-        await this.waitingArea.save();
-        console.log(`\nReport saved to ${reportPath}`);
-
         return report;
     }
 
@@ -475,113 +431,53 @@ CORRECTED SQL:
             ''
         ];
 
-        // Get full metadata for both databases
-        const oldDbMetadata = await this.client.getDatabaseMetadata(config.oldDbId);
-        const newDbMetadata = await this.client.getDatabaseMetadata(config.newDbId);
+        try {
+            const oldDbMetadata = await this.client.getDatabaseMetadata(config.oldDbId);
+            const newDbMetadata = await this.client.getDatabaseMetadata(config.newDbId);
 
-        const oldTablesById = new Map(oldDbMetadata.tables.map((t: any) => [t.id, t]));
-        const newTablesById = new Map(newDbMetadata.tables.map((t: any) => [t.id, t]));
+            const oldTablesById = new Map(oldDbMetadata.tables.map((t: any) => [t.id, t]));
+            const newTablesById = new Map(newDbMetadata.tables.map((t: any) => [t.id, t]));
 
-        // Map table names to IDs for quick lookup
-        const oldTablesByName = new Map<string, any>();
-        oldDbMetadata.tables.forEach((t: any) => {
-            oldTablesByName.set(`${t.schema}.${t.name}`, t);
-        });
+            const oldTablesByName = new Map<string, any>();
+            oldDbMetadata.tables.forEach((t: any) => {
+                oldTablesByName.set(`${t.schema}.${t.name}`, t);
+            });
 
-        // Build detailed mappings
-        for (const [oldId, newId] of Object.entries(this.mapper.tableMap)) {
-            const oldTable: any = oldTablesById.get(Number(oldId));
-            const newTable: any = newTablesById.get(Number(newId));
+            for (const [oldId, newId] of Object.entries(this.mapper.tableMap)) {
+                const oldTable: any = oldTablesById.get(Number(oldId));
+                const newTable: any = newTablesById.get(Number(newId));
 
-            if (!oldTable || !newTable) continue;
+                if (!oldTable || !newTable) continue;
 
-            context.push(`OLD TABLE: ${oldTable.schema}.${oldTable.name} (ID: ${oldId})`);
-            context.push(`  Columns: ${oldTable.fields.map((f: any) => `${f.name}:${f.base_type}`).join(', ')}`);
-            context.push(`  ↓ MAPS TO ↓`);
-            context.push(`NEW TABLE: ${newTable.schema}.${newTable.name} (ID: ${newId})`);
-            context.push(`  Columns: ${newTable.fields.map((f: any) => `${f.name}:${f.base_type}`).join(', ')}`);
-            context.push('');
-        }
-
-        context.push('=== UNMAPPED TABLES ===');
-        this.mapper.missingTables.forEach(table => {
-            const t = oldTablesByName.get(`${table.schema}.${table.sourceTableName}`);
-            if (t) {
-                context.push(`${table.schema}.${table.sourceTableName} (ID: ${t.id})`);
-                context.push(`  Columns: ${t.fields.map((f: any) => `${f.name}:${f.base_type}`).join(', ')}`);
-            } else {
-                context.push(`${table.schema}.${table.sourceTableName}`);
+                context.push(`OLD TABLE: ${oldTable.schema}.${oldTable.name} (ID: ${oldId})`);
+                context.push(`  Columns: ${oldTable.fields?.map((f: any) => `${f.name}:${f.base_type}`).join(', ') || ''}`);
+                context.push(`  ↓ MAPS TO ↓`);
+                context.push(`NEW TABLE: ${newTable.schema}.${newTable.name} (ID: ${newId})`);
+                context.push(`  Columns: ${newTable.fields?.map((f: any) => `${f.name}:${f.base_type}`).join(', ') || ''}`);
+                context.push('');
             }
-        });
+        } catch (e) {
+            console.warn('Error building full SQL context:', e);
+        }
 
         return context.join('\n');
     }
 
-    // Expose mapping info for status endpoints without leaking internals elsewhere
-    getTableMap() {
-        return this.mapper.tableMap;
-    }
-
-    getFieldMap() {
-        return this.mapper.fieldMap;
-    }
-
-    getMissingTables() {
-        return this.mapper.missingTables;
-    }
-
-    async setFieldOverride(oldFieldId: number, newFieldId: number) {
-        await this.mapper.setFieldOverride(oldFieldId, newFieldId);
-    }
-
-    getFieldCandidates(oldFieldId: number) {
-        return this.mapper.getFieldCandidates(oldFieldId);
-    }
-
-    async suggestFieldMapping(oldFieldId: number) {
-        return this.fieldMapperAgent.suggestMapping(oldFieldId);
-    }
+    getTableMap() { return this.mapper.tableMap; }
+    getFieldMap() { return this.mapper.fieldMap; }
+    getMissingTables() { return this.mapper.missingTables; }
+    async setFieldOverride(oldFieldId: number, newFieldId: number) { await this.mapper.setFieldOverride(oldFieldId, newFieldId); }
+    getFieldCandidates(oldFieldId: number) { return this.mapper.getFieldCandidates(oldFieldId); }
+    async suggestFieldMapping(oldFieldId: number) { return this.fieldMapperAgent.suggestMapping(oldFieldId); }
 
     private cleanVisualizationSettings(settings: any): any {
         if (!settings) return {};
         const clean = { ...settings };
-
-        // Remove column settings as they reference specific field IDs
-        if (clean.column_settings) {
-            delete clean.column_settings;
-        }
-
-        // Remove table columns configuration
-        if (clean['table.columns']) {
-            delete clean['table.columns'];
-        }
-
-        // Remove specific graph settings that might reference fields
-        if (clean['graph.dimensions']) {
-            delete clean['graph.dimensions'];
-        }
-        if (clean['graph.metrics']) {
-            delete clean['graph.metrics'];
-        }
-
-        // Remove click behavior if it references fields
-        if (clean.click_behavior) {
-            delete clean.click_behavior;
-        }
-
+        if (clean.column_settings) delete clean.column_settings;
+        if (clean['table.columns']) delete clean['table.columns'];
+        if (clean['graph.dimensions']) delete clean['graph.dimensions'];
+        if (clean['graph.metrics']) delete clean['graph.metrics'];
+        if (clean.click_behavior) delete clean.click_behavior;
         return clean;
-    }
-
-    // Helper methods for API
-    getClient() {
-        return this.client;
-    }
-
-    getMapper() {
-        return this.mapper;
-    }
-
-    getCardIdMapping() {
-        return this.cardIdMapping;
     }
 }

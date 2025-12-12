@@ -26,6 +26,7 @@ export class MetadataMapper {
     public missingFields: UnmatchedField[] = [];
     private fieldInfo: Record<number, FieldInfo> = {};
     private newTablesById: Map<number, any> = new Map();
+    private oldTablesById: Map<number, any> = new Map();
     private oldFieldTargetTable: Record<number, number | undefined> = {};
     private fieldCandidates: Record<number, Array<{ id: number; name: string; display_name?: string }>> = {};
 
@@ -86,6 +87,9 @@ export class MetadataMapper {
         const newDbTables = newDbMetadata.tables || [];
         this.newTablesById = new Map<number, any>();
         newDbTables.forEach((t: any) => this.newTablesById.set(t.id, t));
+
+        this.oldTablesById = new Map<number, any>();
+        oldDbTables.forEach((t: any) => this.oldTablesById.set(t.id, t));
 
         for (const oldTable of oldDbTables) {
             const newTableId = this.tableMap[oldTable.id];
@@ -223,6 +227,23 @@ export class MetadataMapper {
             ignored: false,
             confirmed: true
         }]);
+
+        // Refresh field candidates for this table
+        const oldTable = this.oldTablesById.get(oldTableId);
+        const newTable = this.newTablesById.get(newTableId);
+
+        if (oldTable && newTable && oldTable.fields) {
+            const candidates = (newTable.fields || []).map((f: any) => ({
+                id: f.id,
+                name: f.name,
+                display_name: f.display_name,
+                base_type: f.base_type
+            }));
+
+            for (const field of oldTable.fields) {
+                this.fieldCandidates[field.id] = candidates;
+            }
+        }
     }
 
     async setFieldOverride(oldId: number, newId: number) {
@@ -260,5 +281,39 @@ export class MetadataMapper {
 
     getUnmappedFields(): UnmatchedField[] {
         return this.missingFields;
+    }
+
+    async ensureCandidates(oldFieldId: number, oldTableId: number) {
+        if (this.fieldCandidates[oldFieldId] && this.fieldCandidates[oldFieldId].length > 0) return;
+
+        if (!oldTableId) return;
+
+        const newTableId = this.tableMap[oldTableId];
+        if (!newTableId) {
+            // Maybe the table is not mapped?
+            return;
+        }
+
+        let newTable = this.newTablesById.get(newTableId);
+        if (!newTable) {
+            try {
+                // Fetch if missing from cache
+                newTable = await this.client.getTableMetadata(newTableId);
+                if (newTable) {
+                    this.newTablesById.set(newTableId, newTable);
+                }
+            } catch (e) {
+                console.warn(`Could not fetch new table ${newTableId}`);
+            }
+        }
+
+        if (newTable && newTable.fields) {
+            this.fieldCandidates[oldFieldId] = newTable.fields.map((f: any) => ({
+                id: f.id,
+                name: f.name,
+                display_name: f.display_name,
+                base_type: f.base_type
+            }));
+        }
     }
 }

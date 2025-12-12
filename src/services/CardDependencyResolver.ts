@@ -51,4 +51,25 @@ export class CardDependencyResolver {
 
         return graph;
     }
+    /**
+     * Build reverse dependency graph (Provider -> Consumers)
+     */
+    static buildReverseDependencyGraph(cards: any[]): Map<number, number[]> {
+        const reverseGraph = new Map<number, number[]>();
+
+        // Initialize empty arrays
+        cards.forEach(c => reverseGraph.set(c.id, []));
+
+        for (const card of cards) {
+            const deps = this.extractCardReferences(card.dataset_query);
+            for (const depId of deps) {
+                if (!reverseGraph.has(depId)) {
+                    reverseGraph.set(depId, []);
+                }
+                reverseGraph.get(depId)!.push(card.id);
+            }
+        }
+
+        return reverseGraph;
+    }
 }

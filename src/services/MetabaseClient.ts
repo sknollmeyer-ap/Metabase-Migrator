@@ -62,9 +62,29 @@ export class MetabaseClient {
         }
     }
 
+    async getTableMetadata(tableId: number): Promise<any> {
+        try {
+            const response = await this.client.get(`/api/table/${tableId}`);
+            return response.data;
+        } catch (error) {
+            console.error(`Error fetching table ${tableId}:`, error);
+            return null;
+        }
+    }
+
+    async getField(fieldId: number): Promise<any> {
+        try {
+            const response = await this.client.get(`/api/field/${fieldId}`);
+            return response.data;
+        } catch (error) {
+            console.error(`Error fetching field ${fieldId}:`, error);
+            return null;
+        }
+    }
+
     async getDatabaseMetadata(databaseId: number): Promise<any> {
         try {
-            const response = await this.client.get(`/api/database/${databaseId}/metadata`);
+            const response = await this.client.get(`/api/database/${databaseId}/metadata?include_hidden=true`);
             return response.data;
         } catch (error) {
             console.error(`Error fetching metadata for db ${databaseId}:`, error);

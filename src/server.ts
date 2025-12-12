@@ -4,10 +4,11 @@ import { MigrationManager } from './services/MigrationManager';
 import { MetabaseClient } from './services/MetabaseClient';
 import { config } from './config';
 import { storage } from './services/StorageService';
+import { CardDependencyResolver } from './services/CardDependencyResolver';
 import fs from 'fs-extra';
 
 const app = express();
-const PORT = 3000;
+const PORT = 3001;
 
 app.use(cors());
 app.use(express.json());
@@ -107,6 +108,7 @@ app.get('/api/cards', async (req, res) => {
 app.get('/api/card-mappings', async (req, res) => {
     try {
         const mgr = await ensureInitialized();
+        // Access public getter (will be added to MigrationManager)
         const mappings = mgr.getCardIdMapping().getAll();
 
         // Convert Map to array of objects
@@ -474,6 +476,242 @@ app.post('/api/mappings/field', async (req, res) => {
         res.json({ status: 'ok', sourceFieldId, targetFieldId });
     } catch (error: any) {
         console.error('Field mapping error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/on-hold - Get list of on-hold card IDs
+app.get('/api/on-hold', async (req, res) => {
+    try {
+        const ids = await storage.getState<number[]>('on_hold_cards');
+        res.json(ids || []);
+    } catch (error: any) {
+        console.error('On-hold endpoint error:', error);
+        res.status(500).json({ error: error.message || 'Failed to load on-hold cards' });
+    }
+});
+
+// POST /api/on-hold - Update list of on-hold card IDs
+app.post('/api/on-hold', async (req, res) => {
+    try {
+        const { ids } = req.body;
+        if (!Array.isArray(ids)) {
+            return res.status(400).json({ error: 'ids must be an array of numbers' });
+        }
+        await storage.setState('on_hold_cards', ids);
+        res.json({ status: 'ok', count: ids.length });
+    } catch (error: any) {
+        console.error('On-hold update error:', error);
+        res.status(500).json({ error: error.message || 'Failed to update on-hold cards' });
+    }
+});
+
+// POST /api/reinitialize - Force reload of metadata
+app.post('/api/reinitialize', async (req, res) => {
+    try {
+        console.log('Force reinitializing migration manager...');
+        manager = null;
+        initPromise = null;
+        const mgr = await ensureInitialized();
+        await updateGlobalOnHoldList(mgr);
+        res.json({ status: 'ok', message: 'Migration manager reinitialized and On-Hold list updated' });
+    } catch (error: any) {
+        console.error('Reinitialization error:', error);
+        res.status(500).json({ error: error.message || 'Failed to reinitialize' });
+    }
+});
+
+// Helper to update the global "On Hold" list based on unmigrated native SQL dependencies
+async function updateGlobalOnHoldList(mgr: MigrationManager) {
+    try {
+        console.log('Recalculating On-Hold list...');
+        // 1. Get all cards & mappings
+        const allCards = await mgr.getClient().getAllCards();
+        // Ensure mappings are fresh
+        await mgr.getCardIdMapping().load();
+        const mappings = mgr.getCardIdMapping().getAll();
+
+        // 2. Identify UNMAPPED native SQL cards
+        const unmappedNativeIds = new Set<number>();
+        for (const card of allCards) {
+            if (card.dataset_query?.type === 'native' && !mappings.has(card.id)) {
+                unmappedNativeIds.add(card.id);
+            }
+        }
+
+        // 3. Find dependents (Consumer -> Provider is standard, we need Provider -> Consumer)
+        const reverseGraph = CardDependencyResolver.buildReverseDependencyGraph(allCards);
+        const onHold = new Set<number>(unmappedNativeIds);
+
+        // Propagate "On Hold" status to anything that depends on an unmapped native SQL card
+        const queue = Array.from(unmappedNativeIds);
+        while (queue.length > 0) {
+            const id = queue.shift()!;
+            const dependents = reverseGraph.get(id) || [];
+            for (const depId of dependents) {
+                // If it's already mapped, it doesn't need to be on hold even if it depends on something broken (maybe?)
+                // User rule: "If the native SQL card is migrated / mapped: The dependent card can proceed"
+                // Implicit rule: If the dependent card ITSELF is already migrated, it shouldn't be on hold.
+                if (!mappings.has(depId) && !onHold.has(depId)) {
+                    onHold.add(depId);
+                    queue.push(depId);
+                }
+            }
+        }
+
+        // 4. Save to storage
+        const onHoldList = Array.from(onHold).sort((a, b) => a - b);
+        await storage.setState('on_hold_cards', onHoldList);
+        console.log(`Updated On-Hold list: ${onHoldList.length} cards.`);
+        return onHoldList;
+    } catch (err) {
+        console.error('Failed to update global on-hold list:', err);
+        return [];
+    }
+}
+
+// GET /api/dependencies - Get cards with their dependent counts (Tasks 3)
+app.get('/api/dependencies', async (req, res) => {
+    try {
+        const mgr = await ensureInitialized();
+        const client = new MetabaseClient();
+        const allCards = await client.getAllCards();
+
+        // Ensure we have latest mappings to exclude them
+        await mgr.getCardIdMapping().load();
+        const mappings = mgr.getCardIdMapping().getAll();
+
+        const reverseGraph = CardDependencyResolver.buildReverseDependencyGraph(allCards);
+
+        // Filter: only show cards that HAVE dependents AND are NOT yet mapped
+        const meaningful = allCards
+            .filter((c: any) => !mappings.has(c.id)) // Task 3: Remove already mapped cards
+            .map((c: any) => ({
+                id: c.id,
+                name: c.name,
+                type: c.dataset_query?.type,
+                dependentCount: (reverseGraph.get(c.id) || []).length
+            }))
+            .filter((c: any) => c.dependentCount > 0)
+            .sort((a: any, b: any) => b.dependentCount - a.dependentCount);
+
+        res.json(meaningful);
+    } catch (error: any) {
+        console.error('Dependencies endpoint error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/cards/status - Get all cards with their calculated status
+app.get('/api/cards/status', async (req, res) => {
+    try {
+        const mgr = await ensureInitialized();
+        const client = mgr.getClient();
+
+        // Use cached cards if possible? No, we want fresh list usually, but metadata call is heavy.
+        // We can trust client.getAllCards() which acts as a proxy (maybe uncached).
+        // For performance, we might want to cache this in manager if it's too slow.
+        const allCards = await client.getAllCards();
+
+        const statuses = await mgr.getCardStatuses(allCards);
+        res.json(statuses);
+    } catch (error: any) {
+        console.error('Card status endpoint error:', error);
+        res.status(500).json({ error: error.message || 'Failed to calculate card statuses' });
+    }
+});
+
+// POST /api/migrate/safe-batch - Migrate all "ready" cards safe-to-go
+app.post('/api/migrate/safe-batch', async (req, res) => {
+    try {
+        const mgr = await ensureInitialized();
+        const client = mgr.getClient();
+        const allCards = await client.getAllCards();
+
+        const statuses = await mgr.getCardStatuses(allCards);
+        const readyCards = statuses.filter(s => s.status === 'ready');
+
+        console.log(`\n=== BATCH MIGRATION START: ${readyCards.length} cards ===`);
+
+        const results = [];
+        let successCount = 0;
+        let failCount = 0;
+
+        // Process sequentially to respect order/dependencies? 
+        // "ready" implies all dependencies are migrated. However, if A depends on B, and both are 'ready'?
+        // Impossible. If A depends on B, and B is 'ready' (unmigrated), then A is 'on_hold' (dependency unmigrated).
+        // So 'ready' implies leaf nodes of the remaining tree (or independent nodes).
+        // So strictly safe to parallelize? Maybe, but Metabase API might rate limit. sequential is safer.
+
+        for (const cardStatus of readyCards) {
+            console.log(`Safe-Batch: Migrating card ${cardStatus.id} (${cardStatus.name})...`);
+            try {
+                // Actually perform migration (force=false, dryRun=false)
+                // migrateCardWithDependencies will check dependencies again (should be fine) and perform migration.
+                // We pass empty visited set.
+                // We use the same timeout logic?
+                const result = await withTimeout(
+                    mgr.migrateCardWithDependencies(cardStatus.id, false, new Set(), null, false),
+                    PREVIEW_TIMEOUT_MS
+                );
+
+                results.push({ id: cardStatus.id, status: result.status, result });
+                if (result.status === 'ok' || result.status === 'already_migrated') {
+                    successCount++;
+                } else {
+                    failCount++;
+                }
+            } catch (err: any) {
+                console.error(`Safe-Batch: Failed to migrate ${cardStatus.id}:`, err);
+                results.push({ id: cardStatus.id, status: 'failed', error: err.message });
+                failCount++;
+            }
+        }
+
+        console.log(`=== BATCH MIGRATION END: ${successCount} OK, ${failCount} FAILED ===\n`);
+
+        res.json({
+            summary: {
+                total: readyCards.length,
+                success: successCount,
+                failed: failCount
+            },
+            results
+        });
+
+    } catch (error: any) {
+        console.error('Batch migrate error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/resolve-dependency - Map old card to new card and update state (Tasks 2 & 4)
+app.post('/api/resolve-dependency', async (req, res) => {
+    try {
+        const { oldCardId, newCardId } = req.body;
+        if (!oldCardId || !newCardId) {
+            return res.status(400).json({ error: 'oldCardId and newCardId are required' });
+        }
+
+        const mgr = await ensureInitialized();
+
+        // 1. Save the mapping
+        await storage.saveCardMapping(oldCardId, newCardId);
+
+        // 2. Recalculate On Hold List (Dynamic State)
+        const newOnHoldList = await updateGlobalOnHoldList(mgr);
+
+        // 3. Identify what was released (for UI feedback)
+        // We can't easily track exactly what was released without diffing, but we can return the new list count
+
+        res.json({
+            status: 'ok',
+            message: 'Dependency resolved and On-Hold list updated',
+            onHoldCount: newOnHoldList.length
+        });
+
+    } catch (error: any) {
+        console.error('Resolve dependency error:', error);
         res.status(500).json({ error: error.message });
     }
 });

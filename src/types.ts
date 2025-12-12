@@ -21,6 +21,9 @@ export enum MigrationErrorCode {
     UNKNOWN_ERROR = 'UNKNOWN_ERROR'
 }
 
+export type CardStatus = 'unmigrated' | 'ready' | 'on_hold' | 'migrated' | 'failed';
+export type NativeSqlStatus = 'ok' | 'needs_manual_review' | 'unsupported';
+
 export interface MigrationResponse {
     status: 'ok' | 'failed' | 'already_migrated';
     oldId?: number;
@@ -36,6 +39,9 @@ export interface MigrationResponse {
     cardUrl?: string;
     warnings?: string[];
     errors?: string[];
+    isNativeSql?: boolean;
+    autoFixApplied?: boolean;
+    nativeSqlStatus?: NativeSqlStatus;
 }
 
 export interface TableMetadata {
